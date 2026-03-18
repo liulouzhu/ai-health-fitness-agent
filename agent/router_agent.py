@@ -1,31 +1,53 @@
-from llm import get_llm
+from agent.llm import get_llm
+from agent.state import AgentState
 
-IntentType = ["food", "workout", "general"]
-system_prompt = """
-你是一个智能路由器，负责根据用户的输入消息判断用户的意图，并将其路由到适当的代理进行处理。你需要分析用户的消息内容，识别出用户的意图，并返回一个明确的意图标签。以下是一些可能的意图类型：
-如果用户问的是与食物、餐饮、卡路里、营养成分、图片中的食物识别相关的问题，则返回 "food"，
-如果用户问的是与锻炼、健身计划、运动建议、训练方法相关的问题，则返回 "workout"，
-如果用户问的是与上述类别无关的一般性问题或无法明确分类的问题，则返回 "general"。
-除了这几个选项之外，不要返回其他任何内容,并且不要添加任何额外的解释或文本。
-"""
+INTENT_TYPES = ["food", "workout", "general"]
+
+SYSTEM_PROMPT = """你是一个智能路由器，负责判断用户意图并路由到对应的Agent。
+
+可选意图：
+- "food": 食物、餐饮、卡路里、营养成分、食谱推荐、图片中的食物识别
+- "workout": 锻炼、健身计划、运动建议、训练方法、热量消耗统计
+- "general": 其他一般性对话、问候、无法分类的问题
+
+判断规则：
+1. 如果用户发送了图片（无论文字说什么），优先判断为 "food"（食物识别）
+2. 如果用户问"吃什么"、"推荐食物"、"营养成分"，判断为 "food"
+3. 如果用户问"怎么练"、"动作要领"、"今天运动消耗"，判断为 "workout"
+
+只返回意图标签，不要任何解释。"""
+
 
 class RouterAgent:
     def __init__(self):
         self.llm = get_llm()
 
-    async def run(self, state):
+    def classify_intent(self, state: AgentState) -> AgentState:
+        """意图分类node"""
+        image_info = state.get("image_info", {})
+        if image_info.get("has_image", False):
+            state["intent"] = "food"
+            return state
+
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": state["input_message"]}
         ]
 
-        response = await self.llm.invoke(messages)
+        response = self.llm.invoke(messages)
         intent = response.content.strip().lower()
-        if intent not in IntentType:
+
+        if intent not in INTENT_TYPES:
             intent = "general"
 
         state["intent"] = intent
+        return state
 
+    def routing_func(self, state: AgentState) -> str:
+        """条件路由函数"""
+        return state.get("intent", "general")
 
-
-
+    def handle_general(self, state: AgentState) -> AgentState:
+        """一般对话node"""
+        state["response"] = "你好！我是你的健身健康助手。请告诉我你想查询食物营养还是健身指导？"
+        return state

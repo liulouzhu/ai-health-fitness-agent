@@ -43,6 +43,7 @@ class AgentState(TypedDict):
 
     # --- 路由决策 ---
     intent: str                 # food / workout / profile_update / general
+    last_intent: Optional[str]  # 上一个意图，用于上下文推断
     profile_complete: bool      # 用户档案是否完整
 
     # --- 用户数据 ---
@@ -58,3 +59,7 @@ class AgentState(TypedDict):
     # --- 子Agent结果 ---
     food_result: Optional[str]           # food agent 原始输出
     workout_result: Optional[str]        # workout agent 原始输出
+
+    # --- 待确认数据 ---
+    pending_stats: Optional[Dict]        # 待确认的统计数据 {"type": "meal"/"workout", "data": {...}}
+    pending_response: Optional[str]      # 待确认的原始分析结果

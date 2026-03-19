@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>健身健康智能助手</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: #fff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .tab:hover {
+            background: #e0e0e0;
+        }
+
+        .tab.active {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .card h2 {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 15px;
+        }
+
+        .chat-box {
+            height: 550px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 10px 15px;
+            border-radius: 10px;
+            max-width: 85%;
+            word-wrap: break-word;
+            line-height: 1.6;
+        }
+
+        .message.user {
+            background: #4CAF50;
+            color: white;
+            margin-left: auto;
+        }
+
+        .message.assistant {
+            background: #f0f0f0;
+            color: #333;
+            white-space: pre-wrap;
+        }
+
+        .message.intent {
+            background: #2196F3;
+            color: white;
+            font-size: 12px;
+            padding: 5px 10px;
+            border-radius: 5px;
+            max-width: 120px;
+        }
+
+        .input-area {
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-area input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .input-area button {
+            padding: 12px 24px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .input-area button:hover {
+            background: #45a049;
+        }
+
+        .input-area button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+
+        .stat-item {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 20px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .stat-unit {
+            font-size: 12px;
+            color: #888;
+            margin-left: 5px;
+        }
+
+        .profile-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .profile-item:last-child {
+            border-bottom: none;
+        }
+
+        .profile-label {
+            color: #666;
+        }
+
+        .profile-value {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #4CAF50;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            color: #f44336;
+            background: #ffebee;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>健身健康智能助手</h1>
+
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('chat')">对话</button>
+            <button class="tab" onclick="showTab('stats')">今日统计</button>
+            <button class="tab" onclick="showTab('profile')">用户档案</button>
+            <button class="tab" onclick="showTab('history')">对话历史</button>
+        </div>
+
+        <div id="chat-tab" class="card">
+            <h2>智能对话</h2>
+            <div class="chat-box" id="chatBox"></div>
+            <div class="input-area">
+                <input type="text" id="messageInput" placeholder="输入你的问题..." onkeypress="handleKeyPress(event)">
+                <button onclick="sendMessage()" id="sendBtn">发送</button>
+            </div>
+            <div id="chatError"></div>
+        </div>
+
+        <div id="stats-tab" class="card" style="display:none;">
+            <h2>今日统计</h2>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-label">已摄入热量</div>
+                    <div class="stat-value" id="consumedCal">0<span class="stat-unit">kcal</span></div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">剩余热量</div>
+                    <div class="stat-value" id="remainingCal">0<span class="stat-unit">kcal</span></div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">已摄入蛋白质</div>
+                    <div class="stat-value" id="consumedPro">0<span class="stat-unit">g</span></div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">剩余蛋白质</div>
+                    <div class="stat-value" id="remainingPro">0<span class="stat-unit">g</span></div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">运动消耗</div>
+                    <div class="stat-value" id="burnedCal">0<span class="stat-unit">kcal</span></div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">日期</div>
+                    <div class="stat-value" id="statsDate" style="font-size:14px;">-</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="profile-tab" class="card" style="display:none;">
+            <h2>用户档案</h2>
+            <div id="profileContent">
+                <div class="profile-item">
+                    <span class="profile-label">身高</span>
+                    <span class="profile-value" id="profileHeight">-</span>
+                </div>
+                <div class="profile-item">
+                    <span class="profile-label">体重</span>
+                    <span class="profile-value" id="profileWeight">-</span>
+                </div>
+                <div class="profile-item">
+                    <span class="profile-label">年龄</span>
+                    <span class="profile-value" id="profileAge">-</span>
+                </div>
+                <div class="profile-item">
+                    <span class="profile-label">性别</span>
+                    <span class="profile-value" id="profileGender">-</span>
+                </div>
+                <div class="profile-item">
+                    <span class="profile-label">健身目标</span>
+                    <span class="profile-value" id="profileGoal">-</span>
+                </div>
+                <div class="profile-item">
+                    <span class="profile-label">每日目标热量</span>
+                    <span class="profile-value" id="profileTargetCal">-</span>
+                </div>
+                <div class="profile-item">
+                    <span class="profile-label">每日目标蛋白质</span>
+                    <span class="profile-value" id="profileTargetPro">-</span>
+                </div>
+            </div>
+            <div style="margin-top: 20px;">
+                <button onclick="loadProfile()">刷新</button>
+            </div>
+        </div>
+
+        <div id="history-tab" class="card" style="display:none;">
+            <h2>对话历史</h2>
+            <div id="historyContent"></div>
+            <div style="margin-top: 20px;">
+                <button onclick="clearHistory()" style="background: #f44336;">清除历史</button>
+                <button onclick="loadHistory()" style="background: #2196F3;">刷新</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+
+        function showTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.card').forEach(c => c.style.display = 'none');
+
+            if (tab === 'chat') {
+                document.querySelector('.tab:nth-child(1)').classList.add('active');
+                document.getElementById('chat-tab').style.display = 'block';
+            } else if (tab === 'stats') {
+                document.querySelector('.tab:nth-child(2)').classList.add('active');
+                document.getElementById('stats-tab').style.display = 'block';
+                loadStats();
+            } else if (tab === 'profile') {
+                document.querySelector('.tab:nth-child(3)').classList.add('active');
+                document.getElementById('profile-tab').style.display = 'block';
+                loadProfile();
+            } else if (tab === 'history') {
+                document.querySelector('.tab:nth-child(4)').classList.add('active');
+                document.getElementById('history-tab').style.display = 'block';
+                loadHistory();
+            }
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            if (!message) return;
+
+            const chatBox = document.getElementById('chatBox');
+            const sendBtn = document.getElementById('sendBtn');
+            const errorDiv = document.getElementById('chatError');
+            errorDiv.innerHTML = '';
+
+            addMessage('user', message);
+            input.value = '';
+            sendBtn.disabled = true;
+            sendBtn.innerHTML = '<span class="loading"></span>';
+
+            try {
+                const response = await fetch(`${API_BASE}/chat`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message})
+                });
+
+                const data = await response.json();
+
+                if (data.intent) {
+                    addMessage('intent', `意图: ${data.intent}`);
+                }
+                addMessage('assistant', data.response);
+
+            } catch (e) {
+                errorDiv.innerHTML = `<div class="error">错误: ${e.message}</div>`;
+            } finally {
+                sendBtn.disabled = false;
+                sendBtn.innerHTML = '发送';
+            }
+        }
+
+        function addMessage(type, content) {
+            const chatBox = document.getElementById('chatBox');
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+
+            // 简单的 markdown 渲染
+            let html = content
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\n/g, '<br>')
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/---/g, '<hr>');
+
+            div.innerHTML = html;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function handleKeyPress(e) {
+            if (e.key === 'Enter') sendMessage();
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch(`${API_BASE}/daily_stats`);
+                const data = await response.json();
+                document.getElementById('consumedCal').innerHTML = `${data.consumed_calories}<span class="stat-unit">kcal</span>`;
+                document.getElementById('remainingCal').innerHTML = `${data.remaining_calories}<span class="stat-unit">kcal</span>`;
+                document.getElementById('consumedPro').innerHTML = `${data.consumed_protein}<span class="stat-unit">g</span>`;
+                document.getElementById('remainingPro').innerHTML = `${data.remaining_protein}<span class="stat-unit">g</span>`;
+                document.getElementById('burnedCal').innerHTML = `${data.burned_calories}<span class="stat-unit">kcal</span>`;
+                document.getElementById('statsDate').textContent = data.date;
+            } catch (e) {
+                console.error('加载统计失败:', e);
+            }
+        }
+
+        async function loadProfile() {
+            try {
+                const response = await fetch(`${API_BASE}/profile`);
+                if (!response.ok) throw new Error('档案不存在');
+                const data = await response.json();
+                document.getElementById('profileHeight').textContent = `${data.height} cm`;
+                document.getElementById('profileWeight').textContent = `${data.weight} kg`;
+                document.getElementById('profileAge').textContent = `${data.age} 岁`;
+                document.getElementById('profileGender').textContent = data.gender === 'male' ? '男' : '女';
+                document.getElementById('profileGoal').textContent = data.goal;
+                document.getElementById('profileTargetCal').textContent = `${data.target_calories} kcal`;
+                document.getElementById('profileTargetPro').textContent = `${data.target_protein} g`;
+            } catch (e) {
+                document.getElementById('profileContent').innerHTML = `<div class="error">${e.message}</div>`;
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const response = await fetch(`${API_BASE}/history`);
+                const data = await response.json();
+                const container = document.getElementById('historyContent');
+                if (data.history.length === 0) {
+                    container.innerHTML = '<p style="color:#888;">暂无对话历史</p>';
+                    return;
+                }
+                container.innerHTML = data.history.map(h => `
+                    <div style="padding:10px; border-bottom:1px solid #eee;">
+                        <strong>${h.role === 'user' ? '用户' : '助手'}:</strong>
+                        <p style="margin-top:5px;">${h.content}</p>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('加载历史失败:', e);
+            }
+        }
+
+        async function clearHistory() {
+            if (!confirm('确定要清除对话历史吗？')) return;
+            try {
+                await fetch(`${API_BASE}/history`, {method: 'DELETE'});
+                loadHistory();
+            } catch (e) {
+                console.error('清除历史失败:', e);
+            }
+        }
+
+        window.onload = async () => {
+            try {
+                await fetch(`${API_BASE}/health`);
+            } catch {
+                document.getElementById('chatError').innerHTML =
+                    '<div class="error">后端服务未启动，请先运行: python api.py</div>';
+            }
+        };
+    </script>
+</body>
+</html>

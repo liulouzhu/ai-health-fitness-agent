@@ -14,21 +14,34 @@ def create_workflow():
 
     # 构建图
     builder = StateGraph(AgentState)
+    builder.add_node("check_profile", router.check_profile)
     builder.add_node("classify_intent", router.classify_intent)
     builder.add_node("food_node", food_agent.run)
     builder.add_node("workout_node", workout_agent.run)
+    builder.add_node("profile_node", router.handle_profile_update)
     builder.add_node("general_node", router.handle_general)
 
     # 设置入口点
-    builder.set_entry_point("classify_intent")
+    builder.set_entry_point("check_profile")
 
-    # 添加条件边
+    # 条件边：检查档案后分流
+    builder.add_conditional_edges(
+        "check_profile",
+        lambda state: "continue" if state.get("profile_complete", False) else "ask_profile",
+        {
+            "continue": "classify_intent",
+            "ask_profile": "general_node"
+        }
+    )
+
+    # 意图分类后的条件边
     builder.add_conditional_edges(
         "classify_intent",
         router.routing_func,
         {
             "food": "food_node",
             "workout": "workout_node",
+            "profile_update": "profile_node",
             "general": "general_node"
         }
     )
@@ -36,6 +49,7 @@ def create_workflow():
     # 普通边 - 结束后结束
     builder.add_edge("food_node", END)
     builder.add_edge("workout_node", END)
+    builder.add_edge("profile_node", END)
     builder.add_edge("general_node", END)
 
     # 编译图

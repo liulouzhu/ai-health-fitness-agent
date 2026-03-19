@@ -42,7 +42,8 @@ class AgentState(TypedDict):
     image_info: ImageInfo       # 图片信息
 
     # --- 路由决策 ---
-    intent: str                 # food / workout / general
+    intent: str                 # food / workout / profile_update / general
+    profile_complete: bool      # 用户档案是否完整
 
     # --- 用户数据 ---
     user_profile: UserProfile   # 用户档案(长期记忆)

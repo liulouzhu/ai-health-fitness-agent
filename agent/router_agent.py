@@ -1,6 +1,7 @@
 from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
+from config import AgentConfig
 
 INTENT_TYPES = ["food", "workout", "recipe", "stats_query", "profile_update", "confirm", "general"]
 
@@ -56,57 +57,63 @@ class RouterAgent:
     def classify_intent(self, state: AgentState) -> AgentState:
         """意图分类node"""
         print(f"[Router] classify_intent - 开始意图分类")
-        user_input = state.get("input_message", "")
-        print(f"[Router] classify_intent - 用户输入: {user_input[:50]}...")
-
-        # 如果档案不完整，先处理档案创建/更新
-        if not state.get("profile_complete", True):
+        try:
             user_input = state.get("input_message", "")
-            if any(c.isdigit() for c in user_input):
-                state["intent"] = "profile_update"
-            else:
-                state["intent"] = "general"
-            return state
+            print(f"[Router] classify_intent - 用户输入: {user_input[:50]}...")
 
-        image_info = state.get("image_info", {})
-        if image_info.get("has_image", False):
-            state["intent"] = "food"
-            return state
+            # 如果档案不完整，先处理档案创建/更新
+            if not state.get("profile_complete", True):
+                user_input = state.get("input_message", "")
+                if any(c.isdigit() for c in user_input):
+                    state["intent"] = "profile_update"
+                else:
+                    state["intent"] = "general"
+                return state
 
-        # 检查是否是确认回答
-        user_input = state.get("input_message", "").strip().lower()
-        if self._is_confirmation(user_input):
-            state["intent"] = "confirm"
-            return state
+            image_info = state.get("image_info", {})
+            if image_info.get("has_image", False):
+                state["intent"] = "food"
+                return state
 
-        # 检查是否是上下文相关的短回复（如"换一个"、"再来一个"等）
-        context_intent = self._check_context_dependent_intent(state)
-        if context_intent:
-            state["intent"] = context_intent
-            state["last_intent"] = context_intent
-            return state
+            # 检查是否是确认回答
+            user_input = state.get("input_message", "").strip().lower()
+            if self._is_confirmation(user_input):
+                state["intent"] = "confirm"
+                return state
 
-        # 构建消息列表，融入对话历史
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            # 检查是否是上下文相关的短回复（如"换一个"、"再来一个"等）
+            context_intent = self._check_context_dependent_intent(state)
+            if context_intent:
+                state["intent"] = context_intent
+                state["last_intent"] = context_intent
+                return state
 
-        # 添加对话历史
-        history = state.get("messages", [])
-        for msg in history[-10:]:  # 只取最近10条历史
-            messages.append(msg)
+            # 构建消息列表，融入对话历史
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-        # 添加当前输入
-        messages.append({"role": "user", "content": state["input_message"]})
+            # 添加对话历史
+            history = state.get("messages", [])
+            print(f"[Router] classify_intent - 对话历史 messages 数量: {len(history)}")
+            for msg in history[-AgentConfig.MAX_HISTORY_DISPLAY:]:
+                messages.append(msg)
 
-        response = self.llm.invoke(messages)
-        intent = response.content.strip().lower()
+            # 添加当前输入
+            messages.append({"role": "user", "content": state["input_message"]})
 
-        if intent not in INTENT_TYPES:
-            intent = "general"
+            response = self.llm.invoke(messages)
+            intent = response.content.strip().lower()
 
-        state["intent"] = intent
-        # 保存上一个意图
-        state["last_intent"] = intent
-        print(f"[Router] classify_intent - 分类结果: {intent}, last_intent: {intent}")
+            if intent not in INTENT_TYPES:
+                intent = "general"
+
+            state["intent"] = intent
+            # 保存上一个意图
+            state["last_intent"] = intent
+            print(f"[Router] classify_intent - 分类结果: {intent}, last_intent: {intent}")
+        except Exception as e:
+            print(f"[Router] classify_intent 错误: {e}")
+            state["intent"] = "general"
+            state["last_intent"] = None
         return state
 
     def _check_context_dependent_intent(self, state: AgentState) -> str:
@@ -204,37 +211,44 @@ class RouterAgent:
     def handle_general(self, state: AgentState) -> AgentState:
         """一般对话node"""
         print(f"[Router] handle_general - 处理一般对话")
-        if not state.get("profile_complete", True):
-            state["response"] = self.memory_agent.get_initial_questions()
-            return state
+        try:
+            if not state.get("profile_complete", True):
+                state["response"] = self.memory_agent.get_initial_questions()
+                return state
 
-        # 获取现有对话历史
-        messages = state.get("messages", [])
+            # 获取现有对话历史
+            messages = state.get("messages", [])
+            print(f"[Router] handle_general - 收到 messages 数量: {len(messages)}")
+            if messages:
+                print(f"[Router] handle_general - 最新消息: {messages[-1]}")
 
-        # 构建对话历史字符串（只取最近10条）
-        history_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages[-10:]])
+            # 构建对话历史字符串（只取最近10条）
+            history_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages[-AgentConfig.MAX_HISTORY_DISPLAY:]])
 
-        prompt = GENERAL_PROMPT.format(
-            history=history_str or "（无历史对话）",
-            input=state["input_message"]
-        )
+            prompt = GENERAL_PROMPT.format(
+                history=history_str or "（无历史对话）",
+                input=state["input_message"]
+            )
 
-        # 构建发送给LLM的消息
-        llm_messages = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": state["input_message"]}
-        ]
+            # 构建发送给LLM的消息
+            llm_messages = [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": state["input_message"]}
+            ]
 
-        response = self.llm.invoke(llm_messages)
+            response = self.llm.invoke(llm_messages)
 
-        state["response"] = response.content
+            state["response"] = response.content
 
-        # 将本次对话添加到历史
-        state["messages"] = messages + [
-            {"role": "user", "content": state["input_message"]},
-            {"role": "assistant", "content": response.content}
-        ]
-
+            # 将本次对话添加到历史
+            state["messages"] = messages + [
+                {"role": "user", "content": state["input_message"]},
+                {"role": "assistant", "content": response.content}
+            ]
+            print(f"[Router] handle_general - 更新后 messages 数量: {len(state['messages'])}")
+        except Exception as e:
+            print(f"[Router] handle_general 错误: {e}")
+            state["response"] = "抱歉，服务暂时不可用，请稍后重试。"
         return state
 
     def handle_stats_query(self, state: AgentState) -> AgentState:

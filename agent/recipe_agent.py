@@ -1,4 +1,5 @@
 from agent.llm import get_llm, get_embedding_model
+from config import AgentConfig
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
 from qdrant_client import QdrantClient
@@ -73,7 +74,7 @@ class RecipeAgent:
             return False
 
         judge_prompt = JUDGE_RECIPE_PROMPT.format(
-            retrieved_content=retrieved_content[:2000]
+            retrieved_content=retrieved_content[:AgentConfig.RETRIEVAL_CONTENT_TRUNCATE]
         )
 
         response = self.llm.invoke([{"role": "user", "content": judge_prompt}])
@@ -113,37 +114,40 @@ class RecipeAgent:
     def run(self, state: AgentState) -> AgentState:
         """执行食谱推荐"""
         print(f"[RecipeAgent] run - 开始食谱推荐")
-        # 获取推荐上下文
-        context = self.get_recommendation_context()
+        try:
+            # 获取推荐上下文
+            context = self.get_recommendation_context()
 
-        # 构建检索query
-        query = f"剩余{context['remaining_calories']}卡路里，{context['remaining_protein']}克蛋白质的食谱推荐，健身{context['goal']}"
+            # 构建检索query
+            query = f"剩余{context['remaining_calories']}卡路里，{context['remaining_protein']}克蛋白质的食谱推荐，健身{context['goal']}"
 
-        # 1. 首先从本地向量数据库检索
-        retrieved_results = self.retrieve_from_qdrant(query)
-        retrieved_content = "\n".join([r.text for r in retrieved_results]) if retrieved_results else ""
+            # 1. 首先从本地向量数据库检索
+            retrieved_results = self.retrieve_from_qdrant(query)
+            retrieved_content = "\n".join([r.text for r in retrieved_results]) if retrieved_results else ""
 
-        # 2. 判断检索内容是否足够
-        if not self.is_retrieval_sufficient(retrieved_content):
-            # 3. 不足则使用Tavily搜索
-            tavily_content = search_with_tavily(query)
-            if tavily_content:
-                retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"
+            # 2. 判断检索内容是否足够
+            if not self.is_retrieval_sufficient(retrieved_content):
+                # 3. 不足则使用Tavily搜索
+                tavily_content = search_with_tavily(query)
+                if tavily_content:
+                    retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"
 
-        # 4. 组装提示并调用LLM
-        prompt = RECIPE_AGENT_PROMPT.format(
-            remaining_calories=context["remaining_calories"],
-            remaining_protein=context["remaining_protein"],
-            goal=context["goal"],
-            retrieved_recipes=retrieved_content or "无相关食谱"
-        )
+            # 4. 组装提示并调用LLM
+            prompt = RECIPE_AGENT_PROMPT.format(
+                remaining_calories=context["remaining_calories"],
+                remaining_protein=context["remaining_protein"],
+                goal=context["goal"],
+                retrieved_recipes=retrieved_content or "无相关食谱"
+            )
 
-        messages = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": state["input_message"]}
-        ]
+            messages = [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": state["input_message"]}
+            ]
 
-        response = self.llm.invoke(messages)
-        state["response"] = response.content
-
+            response = self.llm.invoke(messages)
+            state["response"] = response.content
+        except Exception as e:
+            print(f"[RecipeAgent] 错误: {e}")
+            state["response"] = "抱歉，食谱推荐服务暂时不可用，请稍后重试。"
         return state

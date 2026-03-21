@@ -396,7 +396,6 @@ class MemoryManager:
 DAILY_STATS_PATH = "memory/daily_stats"
 PENDING_STATS_FILE = "memory/pending_stats.json"
 CONVERSATION_HISTORY_FILE = "memory/conversation_history.json"
-MAX_HISTORY_LENGTH = 20
 
 INITIAL_QUESTIONS = """你好！我是你的健身健康助手。为了给你提供更好的服务，请告诉我以下信息：
 

@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
 from agent.state import AgentState
 from agent.router_agent import RouterAgent
 from agent.food_agent import FoodAgent
@@ -7,10 +7,51 @@ from agent.workout_agent import WorkoutAgent
 from agent.recipe_agent import RecipeAgent
 from agent.memory_agent import get_memory_agent
 from datetime import datetime
+import os
 
 
-# 默认 checkpointer
-default_checkpointer = InMemorySaver()
+def get_postgres_checkpointer():
+    """创建 PostgreSQL checkpointer
+
+    从环境变量 DATABASE_URL 获取连接字符串，格式：
+    postgresql://user:password@host:port/dbname
+
+    Returns:
+        PostgresSaver: PostgreSQL 检查点持久化器
+
+    注意: 必须保持返回的 cm 全局引用，否则会被 GC 清理导致连接关闭。
+    """
+    global _postgres_cm
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError("DATABASE_URL environment variable is not set")
+    # Enter context to get actual saver instance; keep cm reference to avoid GC
+    _postgres_cm = PostgresSaver.from_conn_string(db_url)
+    saver = _postgres_cm.__enter__()
+    # 初始化数据库表
+    saver.setup()
+    return saver
+
+
+# 全局引用，防止 context manager 被 GC 清理导致连接关闭
+_postgres_cm = None
+
+
+def get_memory_checkpointer():
+    """创建内存 checkpointer（仅用于测试或临时使用）"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    return InMemorySaver()
+
+
+# 默认使用 PostgreSQL checkpointer（生产环境）
+# 注意：首次创建时需要数据库连接，连接失败会抛出异常
+# 如果暂时没有数据库，回退到内存模式（状态重启后丢失，仅用于开发测试）
+try:
+    default_checkpointer = get_postgres_checkpointer()
+except Exception as e:
+    print(f"[Warning] PostgreSQL checkpointer init failed: {e}")
+    print("[Warning] Falling back to InMemorySaver (state will be lost on restart)")
+    default_checkpointer = get_memory_checkpointer()
 
 
 def log_node(node_name: str):
@@ -24,7 +65,7 @@ def create_workflow(checkpointer=None):
     """创建langgraph工作流
 
     Args:
-        checkpointer: 状态持久化检查点，默认使用 InMemorySaver
+        checkpointer: 状态持久化检查点，默认使用 PostgreSQL（通过 DATABASE_URL 配置）
     """
     router = RouterAgent()
     food_agent = FoodAgent()

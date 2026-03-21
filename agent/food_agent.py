@@ -52,49 +52,55 @@ class FoodAgent:
     def run(self, state: AgentState) -> AgentState:
         """执行食物分析"""
         print(f"[FoodAgent] run - 开始分析食物")
-        image_info = state.get("image_info", {})
+        try:
+            image_info = state.get("image_info", {})
 
-        if image_info.get("has_image", False):
-            # 带图片的输入
-            image_url = image_info.get("image_url", "")
-            messages = [
-                {"role": "system", "content": FOOD_AGENT_PROMPT},
-                HumanMessage(
-                    content=[
-                        {"type": "text", "text": "请分析这张图片中的食物营养成分。"},
-                        {"type": "image_url", "image_url": {"url": image_url}}
-                    ]
-                )
-            ]
-        else:
-            # 纯文字输入
-            messages = [
-                {"role": "system", "content": FOOD_AGENT_PROMPT},
-                {"role": "user", "content": f"请分析以下食物的营养成分：{state['input_message']}"}
-            ]
+            if image_info.get("has_image", False):
+                # 带图片的输入
+                image_url = image_info.get("image_url", "")
+                messages = [
+                    {"role": "system", "content": FOOD_AGENT_PROMPT},
+                    HumanMessage(
+                        content=[
+                            {"type": "text", "text": "请分析这张图片中的食物营养成分。"},
+                            {"type": "image_url", "image_url": {"url": image_url}}
+                        ]
+                    )
+                ]
+            else:
+                # 纯文字输入
+                messages = [
+                    {"role": "system", "content": FOOD_AGENT_PROMPT},
+                    {"role": "user", "content": f"请分析以下食物的营养成分：{state['input_message']}"}
+                ]
 
-        response = self.llm.invoke(messages)
-        state["food_result"] = response.content
+            response = self.llm.invoke(messages)
+            state["food_result"] = response.content
 
-        # 提取营养数据，设置待确认
-        nutrition = self._extract_nutrition(response.content)
-        entry = {
-            "name": nutrition.get("name", state["input_message"][:20]),
-            "calories": nutrition.get("calories", 0),
-            "protein": nutrition.get("protein", 0),
-            "fat": nutrition.get("fat", 0),
-            "carbs": nutrition.get("carbs", 0)
-        }
+            # 提取营养数据，设置待确认
+            nutrition = self._extract_nutrition(response.content)
+            entry = {
+                "name": nutrition.get("name", state["input_message"][:20]),
+                "calories": nutrition.get("calories", 0),
+                "protein": nutrition.get("protein", 0),
+                "fat": nutrition.get("fat", 0),
+                "carbs": nutrition.get("carbs", 0)
+            }
 
-        # 设置待确认数据，交给 confirm_node 处理
-        pending = {
-            "type": "meal",
-            "data": entry,
-            "response": response.content
-        }
-        state["pending_stats"] = pending
-        self.memory_agent.save_pending_stats(pending)
+            # 设置待确认数据，交给 confirm_node 处理
+            pending = {
+                "type": "meal",
+                "data": entry,
+                "response": response.content
+            }
+            state["pending_stats"] = pending
+            self.memory_agent.save_pending_stats(pending)
 
-        # 返回分析结果 + 确认问题
-        state["response"] = f"{response.content}\n\n---\n是否将上述食物计入今日热量统计？（是/否）"
+            # 返回分析结果 + 确认问题
+            state["response"] = f"{response.content}\n\n---\n是否将上述食物计入今日热量统计？（是/否）"
+        except Exception as e:
+            print(f"[FoodAgent] 错误: {e}")
+            state["response"] = "抱歉，食物分析服务暂时不可用，请稍后重试。"
+            state["food_result"] = None
+            state["pending_stats"] = None
         return state

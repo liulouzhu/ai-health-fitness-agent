@@ -110,11 +110,12 @@ async def chat(request: ChatRequest):
             "profile_complete": restored_state.get("profile_complete", True),
         }
 
-        print(f"[DEBUG] 调用 invoke - input: '{request.message[:30]}...', last_intent: {state['last_intent']}")
+        print(f"[DEBUG] 调用 invoke - input: '{request.message[:30]}...', last_intent: {state['last_intent']}, messages数量: {len(state['messages'])}")
 
         result = app_obj.invoke(state, config=config)
 
-        print(f"[DEBUG] invoke 完成 - intent: {result.get('intent')}, last_intent: {result.get('last_intent')}")
+        result_messages = result.get("messages", [])
+        print(f"[DEBUG] invoke 完成 - intent: {result.get('intent')}, last_intent: {result.get('last_intent')}, result messages数量: {len(result_messages)}")
 
         return ChatResponse(
             response=result.get("response", ""),

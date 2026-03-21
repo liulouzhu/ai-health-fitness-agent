@@ -81,7 +81,7 @@ class WorkoutAgent:
 
         judge_prompt = JUDGE_PROMPT.format(
             query=query,
-            retrieved_content=retrieved_content[:2000]
+            retrieved_content=retrieved_content[:AgentConfig.RETRIEVAL_CONTENT_TRUNCATE]
         )
 
         response = self.llm.invoke([
@@ -106,44 +106,50 @@ class WorkoutAgent:
     def run(self, state: AgentState) -> AgentState:
         """执行健身指导"""
         print(f"[WorkoutAgent] run - 开始健身指导")
-        query = state["input_message"]
+        try:
+            query = state["input_message"]
 
-        # 1. 首先从本地向量数据库检索
-        retrieved_results = self.retrieve_from_qdrant(query)
-        retrieved_content = "\n".join([r.text for r in retrieved_results]) if retrieved_results else ""
+            # 1. 首先从本地向量数据库检索
+            retrieved_results = self.retrieve_from_qdrant(query)
+            retrieved_content = "\n".join([r.text for r in retrieved_results]) if retrieved_results else ""
 
-        # 2. 判断检索内容是否足够
-        if not self.is_retrieval_sufficient(query, retrieved_results):
-            # 3. 不足则使用Tavily搜索
-            tavily_content = search_with_tavily(query)
-            if tavily_content:
-                retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"
+            # 2. 判断检索内容是否足够
+            if not self.is_retrieval_sufficient(query, retrieved_results):
+                # 3. 不足则使用Tavily搜索
+                tavily_content = search_with_tavily(query)
+                if tavily_content:
+                    retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"
 
-        # 4. 组装提示并调用LLM
-        prompt = WORKOUT_AGENT_PROMPT.format(
-            query=query,
-            retrieved_content=retrieved_content or "无相关内容"
-        )
+            # 4. 组装提示并调用LLM
+            prompt = WORKOUT_AGENT_PROMPT.format(
+                query=query,
+                retrieved_content=retrieved_content or "无相关内容"
+            )
 
-        messages = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": query}
-        ]
+            messages = [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": query}
+            ]
 
-        response = self.llm.invoke(messages)
-        state["workout_result"] = response.content
+            response = self.llm.invoke(messages)
+            state["workout_result"] = response.content
 
-        # 尝试提取运动信息，设置待确认
-        workout_info = self._extract_workout_info(query)
-        if workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0:
-            pending = {
-                "type": "workout",
-                "data": workout_info,
-                "response": response.content
-            }
-            state["pending_stats"] = pending
-            self.memory_agent.save_pending_stats(pending)
-            state["response"] = f"{response.content}\n\n---\n是否将上述运动计入今日消耗统计？（是/否）"
-        else:
-            state["response"] = response.content
+            # 尝试提取运动信息，设置待确认
+            workout_info = self._extract_workout_info(query)
+            if workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0:
+                pending = {
+                    "type": "workout",
+                    "data": workout_info,
+                    "response": response.content
+                }
+                state["pending_stats"] = pending
+                self.memory_agent.save_pending_stats(pending)
+                state["response"] = f"{response.content}\n\n---\n是否将上述运动计入今日消耗统计？（是/否）"
+            else:
+                state["response"] = response.content
+        except Exception as e:
+            print(f"[WorkoutAgent] 错误: {e}")
+            state["response"] = "抱歉，健身指导服务暂时不可用，请稍后重试。"
+            state["workout_result"] = None
+            state["pending_stats"] = None
         return state

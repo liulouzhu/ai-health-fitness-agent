@@ -11,3 +11,10 @@ class AgentConfig:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
 
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
+    # 对话历史配置
+    MAX_HISTORY_LENGTH = 20       # 最多保存的对话历史条数
+    MAX_HISTORY_DISPLAY = 10      # 显示给 LLM 的最近历史条数
+
+    # 检索配置
+    RETRIEVAL_CONTENT_TRUNCATE = 2000  # 检索内容截断长度

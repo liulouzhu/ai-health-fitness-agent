@@ -3,15 +3,12 @@
 基于 LangGraph 的健身健康智能体，提供食物营养分析、食谱推荐、健身指导等功能。
 
 ## 使用技术
-- **Python**
-- **Langgraph**
-- **LlamaIndex**
-- **Fastapi**
-- **RAG**
-
-## ToDo-List
-- 修一下某些bug
-- 完善前端界面
+- **Python** - 编程语言
+- **LangGraph** - 工作流编排
+- **LlamaIndex** - 检索增强生成 (RAG)
+- **FastAPI** - API 服务
+- **PostgreSQL** - 状态持久化
+- **Qdrant** - 向量数据库
 
 ## 功能特性
 
@@ -20,6 +17,7 @@
 - **健身指导**：提供训练计划、动作要领、热量消耗统计
 - **用户档案管理**：记录身高、体重、年龄、性别、健身目标，自动计算每日目标
 - **每日统计**：追踪摄入热量、蛋白质、运动消耗，计算剩余额度
+- **状态持久化**：支持 PostgreSQL 持久化会话状态，服务重启不丢失
 
 ## 项目结构
 
@@ -27,8 +25,10 @@
 ai_health_fitness_agent/
 ├── api.py                 # FastAPI 服务入口
 ├── index.html             # Web 聊天界面
-├── config.py              # 配置文件
+├── config.py              # 配置文件（统一管理配置项）
+├── requirements.txt       # Python 依赖
 ├── agent/
+│   ├── __init__.py       # 统一导出
 │   ├── graph.py          # LangGraph 工作流定义
 │   ├── state.py          # 状态类型定义
 │   ├── router_agent.py   # 意图分类与路由
@@ -62,15 +62,33 @@ pip install -r requirements.txt
 创建 `.env` 文件：
 
 ```env
-LLM_BASE_URL=https://api.example.com/v1
+# LLM 配置
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_API_KEY=your_api_key
-LLM_MODEL=claude-3-sonnet
-VLM_MODEL=claude-3-sonnet
-EMBEDDING_MODEL=text-embedding-3-small
+LLM_MODEL=qwen3.5-flash
+VLM_MODEL=qwen3.5-flash
+EMBEDDING_MODEL=text-embedding-v4
+
+# Tavily 搜索（可选）
 TAVILY_API_KEY=your_tavily_key
+
+# PostgreSQL 状态持久化（可选，默认使用内存）
+DATABASE_URL=postgresql://postgres:password@localhost:5432/health_agent
 ```
 
-### 3. 启动 API 服务
+### 3. 初始化数据库（可选）
+
+如果使用 PostgreSQL 持久化，需要创建数据库：
+
+```bash
+# 登录 PostgreSQL
+psql -U postgres
+
+# 创建数据库
+CREATE DATABASE health_agent;
+```
+
+### 4. 启动 API 服务
 
 ```bash
 python api.py
@@ -78,7 +96,7 @@ python api.py
 
 服务启动后访问 http://localhost:8000 查看 API 文档。
 
-### 4. 启动 Web 界面
+### 5. 启动 Web 界面
 
 直接在浏览器中打开 `index.html` 文件。
 
@@ -91,7 +109,8 @@ python api.py
 ```json
 {
   "message": "推荐一个食谱",
-  "image_url": null
+  "image_url": null,
+  "thread_id": "user_session_001"
 }
 ```
 
@@ -153,12 +172,15 @@ python api.py
 
 ## 调试工具
 
-- `test_checkpoint.py`：测试 InMemorySaver 状态持久化
+- `test_checkpoint.py`：测试 PostgreSQL 状态持久化
 - 运行 `python test_checkpoint.py` 查看 checkpoint 存储状态
 
 ## 依赖服务
 
+- **PostgreSQL**（可选）：状态持久化
+  - 默认端口：5432
+  - 若未配置，使用内存存储（服务重启后状态丢失）
 - **Qdrant**（可选）：本地向量数据库，用于食谱检索
   - 地址：`localhost:6333`
-  - 集合名：`recipes`
+  - 集合名：`recipes`、`fitness_guide`
 - **Tavily API**（可选）：网络搜索增强

@@ -61,6 +61,94 @@ def log_node(node_name: str):
     print(f"{'='*50}\n")
 
 
+# 意图到节点名的映射
+INTENT_TO_NODE = {
+    "food": "food_node",
+    "workout": "workout_node",
+    "recipe": "recipe_node",
+    "stats_query": "stats_node",
+    "confirm": "confirm_node",
+    "profile_update": "profile_node",
+    "general": "general_node"
+}
+
+
+def routing_func_with_send(state: AgentState):
+    """多意图路由 - 顺序执行多意图（避免并发写入问题）
+
+    单意图时正常路由，多意图时路由到 multi_intent_node 顺序执行
+    """
+    intents = state.get("intents", [state.get("intent", "general")])
+    print(f"[Router] routing_func_with_send - 多意图路由: {intents}")
+
+    # 过滤出有效的意图节点（排除 confirm/profile/general/stats 这些需要特殊处理的）
+    special_intents = {"confirm", "profile_update", "general", "stats_query"}
+    intent_nodes = []
+    has_special = False
+
+    for intent in intents:
+        if intent in special_intents:
+            has_special = True
+        if intent in INTENT_TO_NODE:
+            node = INTENT_TO_NODE[intent]
+            if node not in intent_nodes:
+                intent_nodes.append(node)
+
+    # 如果有特殊意图，交给对应节点处理（保持原有逻辑）
+    if has_special:
+        for intent in intents:
+            if intent in special_intents and intent in INTENT_TO_NODE:
+                print(f"[Router] routing_func_with_send - 特殊意图 {intent}，路由到 {INTENT_TO_NODE[intent]}")
+                return INTENT_TO_NODE[intent]
+
+    if not intent_nodes:
+        print(f"[Router] routing_func_with_send - 无有效意图，使用 general_node")
+        return "general_node"
+
+    # 单节点
+    if len(intent_nodes) == 1:
+        print(f"[Router] routing_func_with_send - 单意图，路由到 {intent_nodes[0]}")
+        return intent_nodes[0]
+
+    # 多节点 - 顺序执行，通过 multi_intent_node
+    print(f"[Router] routing_func_with_send - 多意图顺序执行: {intent_nodes}")
+    return "multi_intent_node"
+
+
+def multi_intent_node(state: AgentState) -> AgentState:
+    """多意图顺序执行节点 - 依次处理多个意图"""
+    log_node("multi_intent_node (多意图顺序执行)")
+
+    intents = state.get("intents", [state.get("intent", "general")])
+    print(f"[Router] multi_intent_node - 待处理意图: {intents}")
+
+    # 获取各 agent
+    food_agent = FoodAgent()
+    workout_agent = WorkoutAgent()
+
+    responses = []
+
+    for intent in intents:
+        print(f"[Router] multi_intent_node - 处理意图: {intent}")
+        if intent == "food":
+            food_agent.run(state)
+            if state.get("food_result"):
+                responses.append(state["food_result"])
+        elif intent == "workout":
+            workout_agent.run(state)
+            if state.get("workout_result"):
+                responses.append(state["workout_result"])
+        # 其他意图由主流程处理，这里只处理 food 和 workout
+
+    # 合并响应
+    if responses:
+        state["response"] = "\n\n".join(responses)
+    else:
+        state["response"] = "已处理您的请求。"
+
+    return state
+
+
 def create_workflow(checkpointer=None):
     """创建langgraph工作流
 
@@ -83,6 +171,7 @@ def create_workflow(checkpointer=None):
     builder.add_node("profile_node", router.handle_profile_update)
     builder.add_node("general_node", router.handle_general)
     builder.add_node("stats_node", router.handle_stats_query)
+    builder.add_node("multi_intent_node", multi_intent_node)
 
     builder.set_entry_point("check_profile")
 
@@ -98,33 +187,21 @@ def create_workflow(checkpointer=None):
 
     builder.add_edge("init_daily_stats", "classify_intent")
 
-    # 意图分类后路由
+    # 意图分类后路由 - 单意图直接处理，多意图走 multi_intent_node
     builder.add_conditional_edges(
         "classify_intent",
-        router.routing_func,
+        routing_func_with_send,
         {
-            "food": "food_node",
-            "workout": "workout_node",
-            "recipe": "recipe_node",
-            "stats_query": "stats_node",
-            "confirm": "confirm_node",
-            "profile_update": "profile_node",
-            "general": "general_node"
+            "food_node": END,
+            "workout_node": END,
+            "recipe_node": END,
+            "stats_node": END,
+            "confirm_node": END,
+            "profile_node": END,
+            "general_node": END,
+            "multi_intent_node": END,
         }
     )
-
-    # food/workout 节点后直接结束，等待用户确认
-    builder.add_edge("food_node", END)
-    builder.add_edge("workout_node", END)
-
-    # recipe 节点直接结束（不需要确认）
-    builder.add_edge("recipe_node", END)
-
-    # 确认节点单独处理
-    builder.add_edge("confirm_node", END)
-    builder.add_edge("profile_node", END)
-    builder.add_edge("general_node", END)
-    builder.add_edge("stats_node", END)
 
     # 编译时添加 checkpointer（如果传入）
     if checkpointer:

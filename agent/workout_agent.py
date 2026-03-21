@@ -12,6 +12,9 @@ from agent.memory_agent import get_memory_agent
 
 WORKOUT_AGENT_PROMPT = """你是一个健身教练专家。请根据以下信息回答用户的问题。
 
+用户偏好（请在推荐时注意）：
+{preferences}
+
 用户问题：{query}
 
 参考内容：
@@ -133,10 +136,16 @@ class WorkoutAgent:
                 if tavily_content:
                     retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"
 
-            # 4. 组装提示并调用LLM
+            # 4. 获取用户偏好
+            preferences = self.memory_agent.get_preferences_for_context()
+            if not preferences:
+                preferences = "（暂无偏好记录）"
+
+            # 5. 组装提示并调用LLM
             prompt = WORKOUT_AGENT_PROMPT.format(
                 query=query,
-                retrieved_content=retrieved_content or "无相关内容"
+                retrieved_content=retrieved_content or "无相关内容",
+                preferences=preferences
             )
 
             messages = [

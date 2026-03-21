@@ -7,6 +7,9 @@ from agent.memory_agent import get_memory_agent
 
 FOOD_AGENT_PROMPT = """你是一个食物营养分析专家。请分析用户询问的食物并提供营养信息。
 
+用户偏好（请在推荐和分析时注意）：
+{preferences}
+
 分析内容：
 - 食物名称
 - 热量 (kcal)
@@ -77,11 +80,19 @@ class FoodAgent:
         try:
             image_info = state.get("image_info", {})
 
+            # 获取用户偏好
+            preferences = self.memory_agent.get_preferences_for_context()
+            if not preferences:
+                preferences = "（暂无偏好记录）"
+
+            # 注入偏好的 prompt
+            prompt_with_prefs = FOOD_AGENT_PROMPT.format(preferences=preferences)
+
             if image_info.get("has_image", False):
                 # 带图片的输入
                 image_url = image_info.get("image_url", "")
                 messages = [
-                    {"role": "system", "content": FOOD_AGENT_PROMPT},
+                    {"role": "system", "content": prompt_with_prefs},
                     HumanMessage(
                         content=[
                             {"type": "text", "text": "请分析这张图片中的食物营养成分。"},
@@ -92,7 +103,7 @@ class FoodAgent:
             else:
                 # 纯文字输入
                 messages = [
-                    {"role": "system", "content": FOOD_AGENT_PROMPT},
+                    {"role": "system", "content": prompt_with_prefs},
                     {"role": "user", "content": f"请分析以下食物的营养成分：{state['input_message']}"}
                 ]
 

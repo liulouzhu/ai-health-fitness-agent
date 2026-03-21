@@ -138,8 +138,23 @@ async def chat(request: ChatRequest):
         result_messages = result.get("messages", [])
         print(f"[DEBUG] invoke 完成 - intent: {result.get('intent')}, last_intent: {result.get('last_intent')}, result messages数量: {len(result_messages)}")
 
+        # ============ 长期记忆处理 ============
+        response_text = result.get("response", "")
+
+        # 1. 记录对话历史
+        memory_agent.add_conversation_turn(request.message, response_text)
+
+        # 2. 从用户消息中提取偏好并保存
+        memory_agent.extract_and_save_preferences(request.message)
+
+        # 3. 检查是否需要摘要（每10条消息触发一次）
+        if memory_agent.should_summarize(threshold=10):
+            summary_result = memory_agent.summarize_conversations()
+            if summary_result:
+                print(f"[Memory] 对话已摘要: {summary_result.get('summary', '')[:50]}...")
+
         return ChatResponse(
-            response=result.get("response", ""),
+            response=response_text,
             intent=result.get("intent")
         )
     except Exception as e:
@@ -226,14 +241,14 @@ async def get_daily_stats():
 @app.get("/history")
 async def get_conversation_history():
     """获取对话历史"""
-    history = memory_agent.load_conversation_history()
+    history = memory_agent.get_conversation_history(limit=20)
     return {"history": history}
 
 
 @app.delete("/history")
 async def clear_conversation_history():
     """清除对话历史"""
-    memory_agent.clear_conversation_history()
+    memory_agent.clear_old_conversation_history(keep_recent=0)
     return {"message": "对话历史已清除"}
 
 

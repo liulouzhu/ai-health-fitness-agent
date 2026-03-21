@@ -3,12 +3,55 @@ import re
 import json
 from datetime import datetime
 from pathlib import Path
+from collections import defaultdict
 
 from agent.llm import get_llm
 from config import AgentConfig
 
 
 MEMORY_PATH = "memory/memory.md"
+LONGTERM_MEMORY_PATH = "memory/longterm_memory.md"
+PREFERENCES_PATH = "memory/preferences.md"
+CONVERSATION_HISTORY_FILE = "memory/conversation_history.json"
+DAILY_STATS_PATH = "memory/daily_stats"
+PENDING_STATS_FILE = "memory/pending_stats.json"
+
+# ============ 对话摘要 Prompt ============
+SUMMARIZE_CONVERSATION_PROMPT = """请对以下对话内容进行摘要，提取关键信息。
+
+对话历史：
+{conversation_history}
+
+请以以下JSON格式返回摘要：
+{{
+    "summary": "用2-3句话概括本次对话的主要内容和结果",
+    "learned_preferences": ["从对话中学到的用户偏好（如有）"],
+    "important_facts": ["重要的用户事实或决定（如有）"],
+    "topics_discussed": ["讨论的主题列表"]
+}}"""
+
+EXTRACT_PREFERENCES_PROMPT = """从用户消息中提取偏好信息。
+
+用户消息：{user_message}
+
+请分析并返回JSON格式的偏好（只返回JSON，不要其他内容）：
+{{
+    "food_preferences": {{
+        "liked": ["喜欢的食物（如有）"],
+        "disliked": ["不喜欢或不能吃的食物（如有）"],
+        "allergies": ["食物过敏（如有）"]
+    }},
+    "workout_preferences": {{
+        "liked": ["喜欢的运动类型（如有）"],
+        "disliked": ["不喜欢或不适合的运动（如有）"],
+        "available_equipment": ["可用的健身设备（如有）"],
+        "limitations": ["运动限制或伤病（如有）"]
+    }},
+    "dietary_restrictions": ["饮食限制，如素食、清真等（如有）"],
+    "schedule_preferences": ["时间偏好，如早起/夜猫子（如有）"],
+    "other": ["其他偏好（如有）"]
+}}"""
+
 INITIAL_QUESTIONS = """你好！我是你的健身健康助手。为了给你提供更好的服务，请告诉我以下信息：
 
 1. 身高（cm）
@@ -109,14 +152,25 @@ class MemoryManager:
         except json.JSONDecodeError:
             pass
 
-        # 尝试从文本中提取JSON
-        json_pattern = r'\{[^{}]*\}'
-        matches = re.findall(json_pattern, response)
+        # 尝试使用 JSONDecoder 来解析嵌套的 JSON
+        try:
+            decoder = json.JSONDecoder()
+            # 从字符串开头解析一个 JSON 对象
+            obj, idx = decoder.raw_decode(response)
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 如果以上都失败，尝试从 markdown code block 中提取
+        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
+        matches = re.findall(json_pattern, response, re.DOTALL)
         for match in matches:
             try:
                 return json.loads(match)
             except json.JSONDecodeError:
                 continue
+
         return {}
 
     def save_profile(self, profile: dict) -> None:
@@ -467,45 +521,393 @@ class MemoryManager:
         if os.path.exists(PENDING_STATS_FILE):
             os.remove(PENDING_STATS_FILE)
 
+    # ============ 用户偏好管理 ============
 
-DAILY_STATS_PATH = "memory/daily_stats"
-PENDING_STATS_FILE = "memory/pending_stats.json"
-CONVERSATION_HISTORY_FILE = "memory/conversation_history.json"
+    def load_preferences(self) -> dict:
+        """加载用户偏好"""
+        if not os.path.exists(PREFERENCES_PATH):
+            return self._get_empty_preferences()
 
-INITIAL_QUESTIONS = """你好！我是你的健身健康助手。为了给你提供更好的服务，请告诉我以下信息：
+        with open(PREFERENCES_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        return self._parse_preferences(content)
 
-1. 身高（cm）
-2. 体重（kg）
-3. 年龄
-4. 性别
-5. 健身目标（减脂 / 增肌 / 维持）
+    def _get_empty_preferences(self) -> dict:
+        """获取空偏好结构"""
+        return {
+            "food_preferences": {
+                "liked": [],
+                "disliked": [],
+                "allergies": []
+            },
+            "workout_preferences": {
+                "liked": [],
+                "disliked": [],
+                "available_equipment": [],
+                "limitations": []
+            },
+            "dietary_restrictions": [],
+            "schedule_preferences": [],
+            "other": []
+        }
 
-请直接回复，例如：身高175，体重70，年龄25，性别男，目标减脂"""
+    def _parse_preferences(self, content: str) -> dict:
+        """解析偏好文件"""
+        prefs = self._get_empty_preferences()
 
-DAILY_STATS_TEMPLATE = """# 每日统计 {date}
+        current_section = None
+        lines = content.split("\n")
 
-## 摄入
-- 总热量: {consumed_calories} kcal
-- 总蛋白质: {consumed_protein} g
-- 总脂肪: {consumed_fat} g
-- 总碳水: {consumed_carbs} g
+        for line in lines:
+            line = line.strip()
+            if line.startswith("## 食物偏好"):
+                current_section = "food"
+            elif line.startswith("## 运动偏好"):
+                current_section = "workout"
+            elif line.startswith("- 喜欢:"):
+                items = line.replace("- 喜欢:", "").strip()
+                if items and items != "（无）":
+                    prefs["food_preferences"]["liked"] = [s.strip() for s in items.split(",")]
+            elif line.startswith("- 不喜欢:"):
+                items = line.replace("- 不喜欢:", "").strip()
+                if items and items != "（无）":
+                    prefs["food_preferences"]["disliked"] = [s.strip() for s in items.split(",")]
+            elif line.startswith("- 过敏:"):
+                items = line.replace("- 过敏:", "").strip()
+                if items and items != "（无）":
+                    prefs["food_preferences"]["allergies"] = [s.strip() for s in items.split(",")]
+            elif line.startswith("- 喜欢的运动:"):
+                items = line.replace("- 喜欢的运动:", "").strip()
+                if items and items != "（无）":
+                    prefs["workout_preferences"]["liked"] = [s.strip() for s in items.split(",")]
+            elif line.startswith("- 不喜欢的运动:"):
+                items = line.replace("- 不喜欢的运动:", "").strip()
+                if items and items != "（无）":
+                    prefs["workout_preferences"]["disliked"] = [s.strip() for s in items.split(",")]
+            elif line.startswith("- 可用设备:"):
+                items = line.replace("- 可用设备:", "").strip()
+                if items and items != "（无）":
+                    prefs["workout_preferences"]["available_equipment"] = [s.strip() for s in items.split(",")]
+            elif line.startswith("- 运动限制:"):
+                items = line.replace("- 运动限制:", "").strip()
+                if items and items != "（无）":
+                    prefs["workout_preferences"]["limitations"] = [s.strip() for s in items.split(",")]
+            elif line.startswith("- 饮食限制:"):
+                items = line.replace("- 饮食限制:", "").strip()
+                if items and items != "（无）":
+                    prefs["dietary_restrictions"] = [s.strip() for s in items.split(",")]
+            elif line.startswith("- 作息偏好:"):
+                items = line.replace("- 作息偏好:", "").strip()
+                if items and items != "（无）":
+                    prefs["schedule_preferences"] = [items]
+            elif line.startswith("- 其他:"):
+                items = line.replace("- 其他:", "").strip()
+                if items and items != "（无）":
+                    prefs["other"] = [items]
 
-## 餐食记录
-{meals}
+        return prefs
 
-## 运动消耗
-- 总消耗: {burned_calories} kcal
+    def _preferences_to_markdown(self, prefs: dict) -> str:
+        """将偏好字典转换为markdown格式"""
+        lines = ["# 用户偏好", ""]
 
-## 运动记录
-{workouts}
+        lines.append("## 食物偏好")
+        lines.append(f"- 喜欢: {', '.join(prefs['food_preferences']['liked']) or '（无）'}")
+        lines.append(f"- 不喜欢: {', '.join(prefs['food_preferences']['disliked']) or '（无）'}")
+        lines.append(f"- 过敏: {', '.join(prefs['food_preferences']['allergies']) or '（无）'}")
+        lines.append("")
 
-## 剩余（基于目标）
-- 剩余热量: {remaining_calories} kcal
-- 剩余蛋白质: {remaining_protein} g
+        lines.append("## 运动偏好")
+        lines.append(f"- 喜欢的运动: {', '.join(prefs['workout_preferences']['liked']) or '（无）'}")
+        lines.append(f"- 不喜欢的运动: {', '.join(prefs['workout_preferences']['disliked']) or '（无）'}")
+        lines.append(f"- 可用设备: {', '.join(prefs['workout_preferences']['available_equipment']) or '（无）'}")
+        lines.append(f"- 运动限制: {', '.join(prefs['workout_preferences']['limitations']) or '（无）'}")
+        lines.append("")
+
+        lines.append("## 饮食限制")
+        lines.append(f"- {', '.join(prefs['dietary_restrictions']) or '（无）'}")
+        lines.append("")
+
+        lines.append("## 作息偏好")
+        lines.append(f"- {', '.join(prefs['schedule_preferences']) or '（无）'}")
+        lines.append("")
+
+        lines.append("## 其他")
+        lines.append(f"- {', '.join(prefs['other']) or '（无）'}")
+
+        return "\n".join(lines)
+
+    def save_preferences(self, prefs: dict) -> None:
+        """保存用户偏好"""
+        Path(PREFERENCES_PATH).parent.mkdir(parents=True, exist_ok=True)
+        with open(PREFERENCES_PATH, "w", encoding="utf-8") as f:
+            f.write(self._preferences_to_markdown(prefs))
+
+    def extract_and_save_preferences(self, user_message: str) -> dict:
+        """从用户消息中提取偏好并保存"""
+        prompt = EXTRACT_PREFERENCES_PROMPT.format(user_message=user_message)
+        response = self.llm.invoke([{"role": "user", "content": prompt}])
+
+        data = self._extract_json_from_response(response.content)
+        if not data:
+            return {"updated": False}
+
+        # 合并到现有偏好
+        current = self.load_preferences()
+
+        # 食物偏好
+        for key in ["liked", "disliked", "allergies"]:
+            new_items = data.get("food_preferences", {}).get(key, [])
+            existing = set(current["food_preferences"][key])
+            for item in new_items:
+                if item and item not in existing:
+                    current["food_preferences"][key].append(item)
+
+        # 运动偏好
+        for key in ["liked", "disliked", "available_equipment", "limitations"]:
+            new_items = data.get("workout_preferences", {}).get(key, [])
+            existing = set(current["workout_preferences"][key])
+            for item in new_items:
+                if item and item not in existing:
+                    current["workout_preferences"][key].append(item)
+
+        # 饮食限制
+        new_restrictions = data.get("dietary_restrictions", [])
+        existing_restrictions = set(current["dietary_restrictions"])
+        for item in new_restrictions:
+            if item and item not in existing_restrictions:
+                current["dietary_restrictions"].append(item)
+
+        # 作息偏好
+        new_schedule = data.get("schedule_preferences", [])
+        for item in new_schedule:
+            if item and item not in current["schedule_preferences"]:
+                current["schedule_preferences"].append(item)
+
+        # 其他偏好
+        new_other = data.get("other", [])
+        for item in new_other:
+            if item and item not in current["other"]:
+                current["other"].append(item)
+
+        self.save_preferences(current)
+
+        return {"updated": True, "preferences": current}
+
+    def get_preferences_for_context(self) -> str:
+        """获取偏好字符串用于上下文注入"""
+        prefs = self.load_preferences()
+        context_parts = []
+
+        # 食物偏好
+        if prefs["food_preferences"]["disliked"]:
+            context_parts.append(f"食物禁忌: {', '.join(prefs['food_preferences']['disliked'])}")
+        if prefs["food_preferences"]["allergies"]:
+            context_parts.append(f"食物过敏: {', '.join(prefs['food_preferences']['allergies'])}")
+        if prefs["food_preferences"]["liked"]:
+            context_parts.append(f"喜欢食物: {', '.join(prefs['food_preferences']['liked'])}")
+
+        # 运动偏好
+        if prefs["workout_preferences"]["disliked"]:
+            context_parts.append(f"不喜欢运动: {', '.join(prefs['workout_preferences']['disliked'])}")
+        if prefs["workout_preferences"]["limitations"]:
+            context_parts.append(f"运动限制: {', '.join(prefs['workout_preferences']['limitations'])}")
+
+        # 饮食限制
+        if prefs["dietary_restrictions"]:
+            context_parts.append(f"饮食限制: {', '.join(prefs['dietary_restrictions'])}")
+
+        return "；".join(context_parts) if context_parts else ""
+
+    # ============ 对话历史管理 ============
+
+    def _ensure_conversation_file(self) -> None:
+        """确保对话历史文件存在"""
+        Path(CONVERSATION_HISTORY_FILE).parent.mkdir(parents=True, exist_ok=True)
+        if not os.path.exists(CONVERSATION_HISTORY_FILE):
+            with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump({"conversations": [], "message_count": 0}, f)
+
+    def add_conversation_turn(self, user_message: str, agent_response: str) -> None:
+        """添加一轮对话到历史记录"""
+        self._ensure_conversation_file()
+
+        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        data["conversations"].append({
+            "timestamp": datetime.now().isoformat(),
+            "user": user_message,
+            "agent": agent_response
+        })
+        data["message_count"] += 1
+
+        with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def get_conversation_history(self, limit: int = 10) -> list:
+        """获取最近的对话历史"""
+        self._ensure_conversation_file()
+
+        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return data["conversations"][-limit:]
+
+    def get_message_count(self) -> int:
+        """获取对话消息计数"""
+        self._ensure_conversation_file()
+
+        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return data.get("message_count", 0)
+
+    # ============ 长期记忆摘要 ============
+
+    def should_summarize(self, threshold: int = 10) -> bool:
+        """判断是否应该进行摘要（达到消息阈值）"""
+        count = self.get_message_count()
+        last_summary = self._get_last_summary_info()
+
+        # 如果上次摘要后又有 threshold 条新消息，则需要摘要
+        if last_summary:
+            messages_since_summary = count - last_summary.get("message_count", 0)
+            return messages_since_summary >= threshold
+        else:
+            # 首次摘要
+            return count >= threshold
+
+    def _get_last_summary_info(self) -> dict | None:
+        """获取上次摘要的信息"""
+        if not os.path.exists(LONGTERM_MEMORY_PATH):
+            return None
+
+        with open(LONGTERM_MEMORY_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 查找最新的摘要标记
+        match = re.search(r'<!-- last_summary_count:(\d+) -->', content)
+        if match:
+            return {"message_count": int(match.group(1))}
+        return None
+
+    def summarize_conversations(self, force: bool = False) -> dict | None:
+        """对对话历史进行摘要并存入长期记忆"""
+        threshold = 10
+        if not force and not self.should_summarize(threshold):
+            return None
+
+        # 获取所有未摘要的对话
+        last_summary = self._get_last_summary_info()
+        start_count = last_summary["message_count"] if last_summary else 0
+
+        history = self.get_conversation_history(limit=100)
+        if len(history) <= start_count:
+            return None
+
+        # 构建待摘要的对话文本
+        conversation_text = "\n".join([
+            f"用户: {turn['user']}\n助手: {turn['agent']}"
+            for turn in history[start_count:]
+        ])
+
+        prompt = SUMMARIZE_CONVERSATION_PROMPT.format(
+            conversation_history=conversation_text
+        )
+        response = self.llm.invoke([{"role": "user", "content": prompt}])
+
+        data = self._extract_json_from_response(response.content)
+        if not data:
+            return None
+
+        # 追加到长期记忆文件
+        self._append_to_longterm_memory(data, self.get_message_count())
+
+        return {
+            "summary": data.get("summary", ""),
+            "learned": data.get("learned_preferences", []),
+            "facts": data.get("important_facts", [])
+        }
+
+    def _append_to_longterm_memory(self, summary_data: dict, message_count: int) -> None:
+        """追加摘要到长期记忆文件"""
+        Path(LONGTERM_MEMORY_PATH).parent.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        new_content = f"""
+## 摘要 {timestamp}
+<!-- last_summary_count:{message_count} -->
+
+**概要**: {summary_data.get('summary', '')}
+
+**学到的偏好**:
+{self._format_list(summary_data.get('learned_preferences', []))}
+
+**重要事实**:
+{self._format_list(summary_data.get('important_facts', []))}
+
+**讨论主题**: {', '.join(summary_data.get('topics_discussed', []))}
 """
 
-MEAL_ENTRY_TEMPLATE = "- {name}: {calories} kcal, {protein}g蛋白"
-WORKOUT_ENTRY_TEMPLATE = "- {type}: {duration}分钟, {calories} kcal"
+        # 如果文件存在，读取并在开头插入
+        if os.path.exists(LONGTERM_MEMORY_PATH):
+            with open(LONGTERM_MEMORY_PATH, "r", encoding="utf-8") as f:
+                existing = f.read()
+            # 保留顶部的元信息，只更新内容部分
+            new_file_content = f"# 长期记忆\n<!-- last_summary_count:{message_count} -->\n" + new_content + "\n---\n\n" + existing
+        else:
+            new_file_content = f"# 长期记忆\n<!-- last_summary_count:{message_count} -->\n" + new_content
+
+        with open(LONGTERM_MEMORY_PATH, "w", encoding="utf-8") as f:
+            f.write(new_file_content)
+
+    def _format_list(self, items: list) -> str:
+        """格式化列表为markdown"""
+        if not items:
+            return "（无）"
+        return "\n".join(f"- {item}" for item in items)
+
+    def get_longterm_memory_context(self, limit: int = 3) -> str:
+        """获取最近N条长期记忆用于上下文"""
+        if not os.path.exists(LONGTERM_MEMORY_PATH):
+            return ""
+
+        with open(LONGTERM_MEMORY_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 解析并提取最近 limit 条摘要
+        # 使用 re.DOTALL 让 . 可以匹配换行符
+        summaries = re.findall(r'## 摘要 (.+?)\n+.*?\*\*概要\*\*: (.+?)\n', content, re.DOTALL)
+
+        if not summaries:
+            return ""
+
+        # 取最近的
+        recent = summaries[-limit:]
+        context_parts = []
+
+        for date, summary in recent:
+            # 清理摘要中的换行和多余空白
+            summary_clean = re.sub(r'\s+', ' ', summary).strip()
+            context_parts.append(f"[{date}] {summary_clean}")
+
+        return "；".join(context_parts)
+
+    def clear_old_conversation_history(self, keep_recent: int = 0) -> None:
+        """清除旧的对话历史，保留最近的N条"""
+        self._ensure_conversation_file()
+
+        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if len(data["conversations"]) > keep_recent:
+            data["conversations"] = data["conversations"][-keep_recent:]
+
+            with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 # 便捷函数
 def get_memory_agent() -> MemoryManager:

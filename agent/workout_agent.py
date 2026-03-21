@@ -1,4 +1,6 @@
 import re
+from langchain_core.tools import tool
+from pydantic import BaseModel
 from agent.llm import get_llm, get_embedding_model
 from agent.state import AgentState
 from config import AgentConfig
@@ -29,14 +31,18 @@ JUDGE_PROMPT = """判断以下检索内容是否足够回答用户的问题。
 
 只返回"足够"或"不足"，不要其他文字。"""
 
-EXTRACT_WORKOUT_PROMPT = """从以下用户输入中提取运动信息。
 
-用户输入：{user_input}
+class WorkoutInfo(BaseModel):
+    """运动信息结构"""
+    type: str
+    duration: float
+    calories: float
 
-请以JSON格式返回：
-{{"type": "运动类型", "duration": 数字(分钟), "calories": 数字(消耗热量)}}
 
-如果用户没有提供具体数值，设为0。"""
+@tool
+def extract_workout_info(user_input: str) -> WorkoutInfo:
+    """从用户输入中提取运动信息"""
+    return WorkoutInfo(type=user_input, duration=0, calories=0)
 
 
 class WorkoutAgent:
@@ -47,6 +53,7 @@ class WorkoutAgent:
         self.qdrant_client = QdrantClient(host=AgentConfig.QDRANT_HOST, port=AgentConfig.QDRANT_PORT)
         self.collection_name = "fitness_guide"
         self._vector_store = None
+        self.llm_with_tools = self.llm.bind_tools([extract_workout_info])
 
     @property
     def vector_store(self):
@@ -92,16 +99,22 @@ class WorkoutAgent:
 
     def _extract_workout_info(self, user_input: str) -> dict:
         """从用户输入中提取运动信息"""
-        prompt = EXTRACT_WORKOUT_PROMPT.format(user_input=user_input)
-        response = self.llm.invoke([{"role": "user", "content": prompt}])
-
         try:
-            import json
-            data = json.loads(response.content)
-        except:
-            data = {"type": "未知运动", "duration": 0, "calories": 0}
+            response = self.llm_with_tools.invoke([
+                {"role": "user", "content": f"从以下文本中提取运动信息：{user_input}"}
+            ])
 
-        return data
+            if response.tool_calls:
+                parsed = response.tool_calls[0].parsed
+                return {
+                    "type": parsed.type,
+                    "duration": parsed.duration,
+                    "calories": parsed.calories
+                }
+        except Exception as e:
+            print(f"[WorkoutAgent] 解析运动数据失败: {e}")
+
+        return {"type": "未知运动", "duration": 0, "calories": 0}
 
     def run(self, state: AgentState) -> AgentState:
         """执行健身指导"""

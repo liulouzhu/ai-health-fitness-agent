@@ -1,4 +1,6 @@
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.tools import tool
+from pydantic import BaseModel
 from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
@@ -14,40 +16,60 @@ FOOD_AGENT_PROMPT = """你是一个食物营养分析专家。请分析用户询
 
 直接回复分析结果，不需要额外解释。"""
 
-EXTRACT_NUTRITION_PROMPT = """从以下食物分析结果中提取营养数据。
 
-分析结果：
-{analysis_result}
+class NutritionInfo(BaseModel):
+    """营养信息结构"""
+    name: str
+    calories: float
+    protein: float
+    fat: float
+    carbs: float
 
-请以JSON格式返回：
-{{"name": "食物名称", "calories": 数字, "protein": 数字, "fat": 数字, "carbs": 数字}}
 
-如果分析结果中没有提供某项数据，该项设为0。"""
+@tool
+def extract_nutrition(food_description: str) -> NutritionInfo:
+    """从食物描述中提取营养信息"""
+    return NutritionInfo(
+        name=food_description,
+        calories=0,
+        protein=0,
+        fat=0,
+        carbs=0
+    )
 
 
 class FoodAgent:
     def __init__(self):
         self.llm = get_llm()
         self.memory_agent = get_memory_agent()
+        self.llm_with_tools = self.llm.bind_tools([extract_nutrition])
 
-    def _extract_nutrition(self, analysis_result: str) -> dict:
-        """从分析结果中提取营养数据"""
-        prompt = EXTRACT_NUTRITION_PROMPT.format(analysis_result=analysis_result)
-        response = self.llm.invoke([{"role": "user", "content": prompt}])
-
+    def _extract_nutrition(self, food_description: str) -> dict:
+        """从食物描述中提取营养数据"""
         try:
-            import json
-            data = json.loads(response.content)
-        except:
-            data = {
-                "name": "未知食物",
-                "calories": 0,
-                "protein": 0,
-                "fat": 0,
-                "carbs": 0
-            }
+            response = self.llm_with_tools.invoke([
+                {"role": "user", "content": f"从以下文本中提取营养信息：{food_description}"}
+            ])
 
-        return data
+            if response.tool_calls:
+                parsed = response.tool_calls[0].parsed
+                return {
+                    "name": parsed.name,
+                    "calories": parsed.calories,
+                    "protein": parsed.protein,
+                    "fat": parsed.fat,
+                    "carbs": parsed.carbs
+                }
+        except Exception as e:
+            print(f"[FoodAgent] 解析营养数据失败: {e}")
+
+        return {
+            "name": "未知食物",
+            "calories": 0,
+            "protein": 0,
+            "fat": 0,
+            "carbs": 0
+        }
 
     def run(self, state: AgentState) -> AgentState:
         """执行食物分析"""

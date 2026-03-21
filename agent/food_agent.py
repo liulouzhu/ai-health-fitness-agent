@@ -87,17 +87,17 @@ class FoodAgent:
                 "carbs": nutrition.get("carbs", 0)
             }
 
-            # 设置待确认数据，交给 confirm_node 处理
-            pending = {
+            # 设置待确认数据
+            state["pending_stats"] = {
                 "type": "meal",
                 "data": entry,
                 "response": response.content
             }
-            state["pending_stats"] = pending
-            self.memory_agent.save_pending_stats(pending)
+            self.memory_agent.save_pending_stats(state["pending_stats"])
 
-            # 返回分析结果 + 确认问题
+            # 设置响应（单意图时直接返回，多意图时由 multi_intent_node 合并）
             state["response"] = f"{response.content}\n\n---\n是否将上述食物计入今日热量统计？（是/否）"
+
         except Exception as e:
             print(f"[FoodAgent] 错误: {e}")
             state["response"] = "抱歉，食物分析服务暂时不可用，请稍后重试。"

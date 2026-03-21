@@ -2,24 +2,6 @@ from typing import Annotated, Any, Dict, List, Optional, TypedDict
 import operator
 
 
-def merge_results(prev: Any, new: Any) -> Any:
-    """合并两个结果，支持多意图场景
-
-    Args:
-        prev: 之前的结果
-        new: 新的结果
-    Returns:
-        合并后的结果
-    """
-    if new is None:
-        return prev
-    if prev is None:
-        return new
-    # 多个结果用分隔符连接
-    return f"{prev}\n\n---\n\n{new}"
-
-
-
 # ============ 用户长期档案 ============
 class UserProfile(TypedDict):
     """用户基础信息和长期目标"""
@@ -72,13 +54,14 @@ class AgentState(TypedDict):
     # --- 对话历史 ---
     messages: Annotated[list, operator.add]  # 对话历史
 
-    # --- 输出（支持并发归并）---
-    response: Annotated[Optional[str], merge_results]  # 最终回复给用户的内容
+    # --- 最终响应 ---
+    response: Optional[str]     # 最终回复给用户的内容
 
-    # --- 子Agent结果（支持并发归并）---
-    food_result: Annotated[Optional[str], merge_results]   # food agent 原始输出
-    workout_result: Annotated[Optional[str], merge_results] # workout agent 原始输出
+    # --- 子Agent结果 ---
+    food_result: Optional[str]           # food agent 输出
+    workout_result: Optional[str]        # workout agent 输出
+    recipe_result: Optional[str]          # recipe agent 输出
 
-    # --- 待确认数据（支持并发归并）---
-    pending_stats: Annotated[Optional[Dict], merge_results]   # 待确认的统计数据 {"type": "meal"/"workout", "data": {...}}
-    pending_response: Annotated[Optional[str], merge_results] # 待确认的原始分析结果
+    # --- 待确认数据 ---
+    pending_stats: Optional[Dict]        # 待确认的统计数据
+    pending_response: Optional[str]      # 待确认的原始分析结果

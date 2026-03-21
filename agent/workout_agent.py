@@ -137,13 +137,12 @@ class WorkoutAgent:
             # 尝试提取运动信息，设置待确认
             workout_info = self._extract_workout_info(query)
             if workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0:
-                pending = {
+                state["pending_stats"] = {
                     "type": "workout",
                     "data": workout_info,
                     "response": response.content
                 }
-                state["pending_stats"] = pending
-                self.memory_agent.save_pending_stats(pending)
+                self.memory_agent.save_pending_stats(state["pending_stats"])
                 state["response"] = f"{response.content}\n\n---\n是否将上述运动计入今日消耗统计？（是/否）"
             else:
                 state["response"] = response.content

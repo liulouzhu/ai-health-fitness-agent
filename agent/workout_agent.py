@@ -44,7 +44,7 @@ class WorkoutAgent:
         self.llm = get_llm()
         self.embed_model = get_embedding_model()
         self.memory_agent = get_memory_agent()
-        self.qdrant_client = QdrantClient(host="localhost", port=6333)
+        self.qdrant_client = QdrantClient(host=AgentConfig.QDRANT_HOST, port=AgentConfig.QDRANT_PORT)
         self.collection_name = "fitness_guide"
         self._vector_store = None
 

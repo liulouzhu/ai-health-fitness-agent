@@ -262,19 +262,94 @@ class MemoryManager:
             elif line.startswith("- 总消耗:"):
                 stats["burned_calories"] = int(self._extract_number(line))
             elif current_section == "meals" and line.startswith("-"):
-                # 解析餐食记录
-                pass  # 简化处理
+                # 解析餐食记录: "- 午餐: 500 kcal, 30g蛋白"
+                meal = self._parse_meal_line(line)
+                if meal:
+                    stats["meals"].append(meal)
             elif current_section == "workouts" and line.startswith("-"):
-                # 解析运动记录
-                pass  # 简化处理
+                # 解析运动记录: "- 跑步: 30分钟, 300 kcal"
+                workout = self._parse_workout_line(line)
+                if workout:
+                    stats["workouts"].append(workout)
 
         return stats
 
     def _extract_number(self, line: str) -> str:
         """从行中提取数字"""
-        import re
         match = re.search(r'\d+', line)
         return match.group() if match else "0"
+
+    def _parse_meal_line(self, line: str) -> dict | None:
+        """解析餐食记录行: "- 午餐: 500 kcal, 30g蛋白"
+        可能格式:
+        - "- 午餐: 500 kcal, 30g蛋白"
+        - "- 午餐: 500 kcal, 30g蛋白, 20g脂肪, 50g碳水"
+        """
+        try:
+            # 移除开头的 "- "
+            line = line[2:].strip()
+
+            # 提取名称（冒号之前的部分）
+            if ": " not in line:
+                return None
+            name, rest = line.split(": ", 1)
+
+            meal = {"name": name.strip()}
+
+            # 提取热量
+            cal_match = re.search(r'(\d+)\s*kcal', rest)
+            if cal_match:
+                meal["calories"] = int(cal_match.group(1))
+
+            # 提取蛋白质
+            pro_match = re.search(r'(\d+)\s*g.*蛋白', rest)
+            if pro_match:
+                meal["protein"] = float(pro_match.group(1))
+
+            # 提取脂肪（可选）
+            fat_match = re.search(r'(\d+)\s*g.*脂肪', rest)
+            if fat_match:
+                meal["fat"] = float(fat_match.group(1))
+
+            # 提取碳水（可选）
+            carbs_match = re.search(r'(\d+)\s*g.*碳水', rest)
+            if carbs_match:
+                meal["carbs"] = float(carbs_match.group(1))
+
+            return meal if "calories" in meal or "protein" in meal else None
+        except Exception:
+            return None
+
+    def _parse_workout_line(self, line: str) -> dict | None:
+        """解析运动记录行: "- 跑步: 30分钟, 300 kcal"
+        可能格式:
+        - "- 跑步: 30分钟, 300 kcal"
+        - "- 力量训练: 45分钟, 200 kcal"
+        """
+        try:
+            # 移除开头的 "- "
+            line = line[2:].strip()
+
+            # 提取名称（冒号之前的部分）
+            if ": " not in line:
+                return None
+            name, rest = line.split(": ", 1)
+
+            workout = {"type": name.strip()}
+
+            # 提取时长
+            duration_match = re.search(r'(\d+)\s*分钟', rest)
+            if duration_match:
+                workout["duration"] = int(duration_match.group(1))
+
+            # 提取热量
+            cal_match = re.search(r'(\d+)\s*kcal', rest)
+            if cal_match:
+                workout["calories"] = int(cal_match.group(1))
+
+            return workout if "duration" in workout or "calories" in workout else None
+        except Exception:
+            return None
 
     def save_daily_stats(self, stats: dict, profile: dict = None) -> None:
         """保存每日统计到markdown文件"""

@@ -3,7 +3,7 @@ sys.path.insert(0, ".")
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
 
@@ -35,8 +35,15 @@ memory_agent = get_memory_agent()
 # ============ 请求/响应模型 ============
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=2000)
     image_url: Optional[str] = None
+
+    @field_validator("message")
+    @classmethod
+    def message_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("消息不能为空")
+        return v.strip()
 
 
 class ChatResponse(BaseModel):
@@ -45,11 +52,25 @@ class ChatResponse(BaseModel):
 
 
 class ProfileRequest(BaseModel):
-    height: Optional[float] = None
-    weight: Optional[float] = None
-    age: Optional[int] = None
-    gender: Optional[str] = None
-    goal: Optional[str] = None
+    height: Optional[float] = Field(None, gt=0, le=300, description="身高(cm)，范围 0-300")
+    weight: Optional[float] = Field(None, gt=0, le=500, description="体重(kg)，范围 0-500")
+    age: Optional[int] = Field(None, gt=0, le=150, description="年龄，范围 0-150")
+    gender: Optional[str] = Field(None, description="性别")
+    goal: Optional[str] = Field(None, description="健身目标")
+
+    @field_validator("gender")
+    @classmethod
+    def validate_gender(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("male", "female", "男", "女"):
+            raise ValueError("性别必须是 male/female/男/女")
+        return v
+
+    @field_validator("goal")
+    @classmethod
+    def validate_goal(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("减脂", "增肌", "维持", "cut", "bulk", "maintain"):
+            raise ValueError("目标必须是 减脂/增肌/维持 或 cut/bulk/maintain")
+        return v
 
 
 class ProfileResponse(BaseModel):

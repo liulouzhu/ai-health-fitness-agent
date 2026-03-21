@@ -18,3 +18,7 @@ class AgentConfig:
 
     # 检索配置
     RETRIEVAL_CONTENT_TRUNCATE = 2000  # 检索内容截断长度
+
+    # Qdrant 配置
+    QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+    QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))

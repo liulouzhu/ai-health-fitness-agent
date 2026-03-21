@@ -13,8 +13,6 @@ from config import AgentConfig
 
 
 # Qdrant 配置
-QDRANT_HOST = "localhost"
-QDRANT_PORT = 6333
 COLLECTION_NAME = "fitness_guide"
 
 # 文档路径
@@ -47,7 +45,7 @@ def create_qdrant_collection(client: QdrantClient, collection_name: str, vector_
 def build_index():
     """构建向量索引并存储到Qdrant"""
     # 初始化Qdrant客户端
-    client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    client = QdrantClient(host=AgentConfig.QDRANT_HOST, port=AgentConfig.QDRANT_PORT)
 
     # 创建collection
     create_qdrant_collection(client, COLLECTION_NAME)

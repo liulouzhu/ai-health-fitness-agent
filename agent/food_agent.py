@@ -50,21 +50,35 @@ class FoodAgent:
     def _extract_nutrition(self, food_description: str) -> dict:
         """从食物描述中提取营养数据"""
         try:
-            response = self.llm_with_tools.invoke([
-                {"role": "user", "content": f"从以下文本中提取营养信息：{food_description}"}
+            prompt = f"""从以下食物描述中提取营养信息，返回JSON格式：
+食物描述：{food_description}
+
+返回格式（仅返回JSON，不要其他文字）：
+{{"name": "食物名称", "calories": 热量数值, "protein": 蛋白质克数, "fat": 脂肪克数, "carbs": 碳水化合物克数}}"""
+
+            response = self.llm.invoke([
+                {"role": "user", "content": prompt}
             ])
 
-            if response.tool_calls:
-                parsed = response.tool_calls[0].parsed
+            print(f"[FoodAgent] _extract_nutrition - response.content: {response.content}")
+
+            # 尝试解析JSON
+            import json
+            import re
+            # 提取JSON
+            json_match = re.search(r'\{[^}]+\}', response.content)
+            if json_match:
+                data = json.loads(json_match.group())
                 return {
-                    "name": parsed.name,
-                    "calories": parsed.calories,
-                    "protein": parsed.protein,
-                    "fat": parsed.fat,
-                    "carbs": parsed.carbs
+                    "name": data.get("name", "未知食物"),
+                    "calories": float(data.get("calories", 0) or 0),
+                    "protein": float(data.get("protein", 0) or 0),
+                    "fat": float(data.get("fat", 0) or 0),
+                    "carbs": float(data.get("carbs", 0) or 0)
                 }
         except Exception as e:
             print(f"[FoodAgent] 解析营养数据失败: {e}")
+            print(f"[FoodAgent] 原始响应: {response.content if 'response' in dir() else 'N/A'}")
 
         return {
             "name": "未知食物",
@@ -76,7 +90,8 @@ class FoodAgent:
 
     def run(self, state: AgentState) -> AgentState:
         """执行食物分析"""
-        print(f"[FoodAgent] run - 开始分析食物")
+        is_user_reporting = state.get("intent") == "food_report"
+        print(f"[FoodAgent] run - is_user_reporting={is_user_reporting}, intent={state.get('intent')}")
         try:
             image_info = state.get("image_info", {})
 
@@ -108,10 +123,13 @@ class FoodAgent:
                 ]
 
             response = self.llm.invoke(messages)
+            print(f"[FoodAgent] LLM响应长度: {len(response.content) if response.content else 0}")
             state["food_result"] = response.content
 
-            # 提取营养数据，设置待确认
+            # 提取营养数据
+            print(f"[FoodAgent] 开始提取营养数据...")
             nutrition = self._extract_nutrition(response.content)
+            print(f"[FoodAgent] 营养数据: {nutrition}")
             entry = {
                 "name": nutrition.get("name", state["input_message"][:20]),
                 "calories": nutrition.get("calories", 0),
@@ -120,19 +138,32 @@ class FoodAgent:
                 "carbs": nutrition.get("carbs", 0)
             }
 
-            # 设置待确认数据
-            state["pending_stats"] = {
-                "type": "meal",
-                "data": entry,
-                "response": response.content
-            }
-            self.memory_agent.save_pending_stats(state["pending_stats"])
-
-            # 设置响应（单意图时直接返回，多意图时由 multi_intent_node 合并）
-            state["response"] = f"{response.content}\n\n---\n是否将上述食物计入今日热量统计？（是/否）"
+            # 判断是否是用户主动报告（直接记录）还是询问（需要确认）
+            if is_user_reporting:
+                # 直接保存并返回今日情况
+                print(f"[FoodAgent] 开始保存营养数据: {entry}")
+                self.memory_agent.update_daily_stats("meal", entry)
+                print(f"[FoodAgent] 保存完成，获取每日摘要...")
+                summary = self.memory_agent.get_daily_summary()
+                print(f"[FoodAgent] 摘要长度: {len(summary) if summary else 0}")
+                # 先输出食物营养成分，再输出今日统计
+                state["response"] = f"{response.content}\n\n---\n已记录。\n\n{summary}"
+                state["pending_stats"] = None
+                self.memory_agent.clear_pending_stats()
+            else:
+                # 询问是否保存
+                state["pending_stats"] = {
+                    "type": "meal",
+                    "data": entry,
+                    "response": response.content
+                }
+                self.memory_agent.save_pending_stats(state["pending_stats"])
+                state["response"] = f"{response.content}\n\n---\n是否将上述食物计入今日热量统计？（是/否）"
 
         except Exception as e:
+            import traceback
             print(f"[FoodAgent] 错误: {e}")
+            traceback.print_exc()
             state["response"] = "抱歉，食物分析服务暂时不可用，请稍后重试。"
             state["food_result"] = None
             state["pending_stats"] = None

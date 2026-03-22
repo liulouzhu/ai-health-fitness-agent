@@ -65,7 +65,9 @@ def log_node(node_name: str):
 # 意图到节点名的映射
 INTENT_TO_NODE = {
     "food": "food_node",
+    "food_report": "food_node",
     "workout": "workout_node",
+    "workout_report": "workout_node",
     "recipe": "recipe_node",
     "stats_query": "stats_node",
     "confirm": "confirm_node",

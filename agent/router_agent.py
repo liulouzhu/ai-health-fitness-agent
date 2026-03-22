@@ -3,7 +3,7 @@ from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
 from config import AgentConfig
 
-INTENT_TYPES = ["food", "workout", "recipe", "stats_query", "profile_update", "confirm", "general"]
+INTENT_TYPES = ["food", "workout", "recipe", "stats_query", "profile_update", "confirm", "general", "food_report", "workout_report"]
 
 SYSTEM_PROMPT = """你是一个智能路由器，负责判断用户意图并路由到对应的Agent。
 
@@ -114,6 +114,17 @@ class RouterAgent:
             if not valid_intents:
                 valid_intents = ["general"]
 
+            # 判断是否是用户主动报告吃食物或做运动
+            user_input_original = state.get("input_message", "")
+            is_reporting = self._is_user_reporting_food_or_workout(user_input_original)
+
+            # 如果是主动报告且意图是 food/workout，修改意图类型
+            if is_reporting:
+                if valid_intents[0] == "food":
+                    valid_intents = ["food_report"] + valid_intents[1:]
+                elif valid_intents[0] == "workout":
+                    valid_intents = ["workout_report"] + valid_intents[1:]
+
             # 保留第一个作为主意图（兼容现有逻辑）
             state["intent"] = valid_intents[0]
             # 保存多意图列表
@@ -155,8 +166,17 @@ class RouterAgent:
         """判断是否是确认回答"""
         if not user_input:
             return False
-        confirm_words = ["是", "否", "yes", "no", "确认", "取消", "算", "不算", "计入", "不计入"]
-        return len(user_input) <= 5 and any(word in user_input for word in confirm_words)
+        confirm_words = ["是", "好的", "记录", "yes", "确认", "计入", "算", "嗯", "ok", "no", "取消", "不算", "不计入"]
+        return len(user_input) <= 10 and any(word in user_input for word in confirm_words)
+
+    def _is_user_reporting_food_or_workout(self, text: str) -> bool:
+        """判断用户是否在主动报告吃食物或做运动"""
+        if not text:
+            return False
+        food_report_words = ["吃了", "吃了点", "吃了碗", "吃了份", "吃了些", "摄入了", "吃进去", "吃了一个", "吃了俩", "干掉", "干饭", "干饭人"]
+        workout_report_words = ["跑了", "跑了步", "做了运动", "健身了", "练了", "锻炼了", "运动了", "跑步了", "游泳了", "骑车了", "走路了", "跳绳了", "打球了", "健身"]
+        text_lower = text.lower()
+        return any(word in text_lower for word in food_report_words + workout_report_words)
 
     def routing_func(self, state: AgentState) -> str:
         """条件路由函数"""
@@ -201,7 +221,7 @@ class RouterAgent:
             return state
 
         # 判断是肯定还是否定
-        is_yes = any(word in user_input for word in ["是", "yes", "确认", "算", "计入"])
+        is_yes = any(word in user_input for word in ["是", "好的", "记录", "yes", "确认", "计入", "算", "嗯", "ok", "okay"])
 
         if is_yes:
             # 保存统计

@@ -40,31 +40,6 @@ class WorkoutInfo(BaseModel):
     calories: float
 
 
-def _extract_workout_info(self, user_input: str) -> dict:
-    """从用户输入中提取运动信息"""
-    try:
-        response = self.llm_with_tools.invoke([
-            {"role": "user", "content": f"从以下文本中提取运动信息：{user_input}"}
-        ])
-
-        if response.tool_calls:
-            # 直接从 tool_call 的 arguments 解析
-            tool_call = response.tool_calls[0]
-            args = tool_call.get("args", {}) or tool_call.get("arguments", {})
-            if isinstance(args, str):
-                import json
-                args = json.loads(args)
-            return {
-                "type": args.get("type", "未知运动"),
-                "duration": float(args.get("duration", 0)),
-                "calories": float(args.get("calories", 0))
-            }
-    except Exception as e:
-        print(f"[WorkoutAgent] 解析运动数据失败: {e}")
-
-    return {"type": "未知运动", "duration": 0, "calories": 0}
-
-
 class WorkoutAgent:
     def __init__(self):
         self.llm = get_llm()
@@ -116,11 +91,16 @@ class WorkoutAgent:
             ])
 
             if response.tool_calls:
-                parsed = response.tool_calls[0].parsed
+                # tool_calls[0] 是 dict，直接从 arguments 中解析
+                tool_call = response.tool_calls[0]
+                args = tool_call.get("args", {}) or tool_call.get("arguments", {})
+                if isinstance(args, str):
+                    import json
+                    args = json.loads(args)
                 return {
-                    "type": parsed.type,
-                    "duration": parsed.duration,
-                    "calories": parsed.calories
+                    "type": args.get("type", "未知运动"),
+                    "duration": float(args.get("duration", 0) or 0),
+                    "calories": float(args.get("calories", 0) or 0)
                 }
         except Exception as e:
             print(f"[WorkoutAgent] 解析运动数据失败: {e}")
@@ -130,6 +110,7 @@ class WorkoutAgent:
     def run(self, state: AgentState) -> AgentState:
         """执行健身指导"""
         print(f"[WorkoutAgent] run - 开始健身指导")
+        is_user_reporting = state.get("intent") == "workout_report"
         try:
             query = state["input_message"]
 
@@ -164,9 +145,19 @@ class WorkoutAgent:
             response = self.llm.invoke(messages)
             state["workout_result"] = response.content
 
-            # 尝试提取运动信息，设置待确认
+            # 尝试提取运动信息
             workout_info = self._extract_workout_info(query)
-            if workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0:
+
+            # 判断是否是用户主动报告（直接记录）还是询问（需要确认）
+            if is_user_reporting and (workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0):
+                # 直接保存并返回今日情况
+                self.memory_agent.update_daily_stats("workout", workout_info)
+                summary = self.memory_agent.get_daily_summary()
+                state["response"] = f"已记录。\n\n{summary}"
+                state["pending_stats"] = None
+                self.memory_agent.clear_pending_stats()
+            elif workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0:
+                # 询问是否保存
                 state["pending_stats"] = {
                     "type": "workout",
                     "data": workout_info,

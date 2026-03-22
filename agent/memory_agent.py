@@ -16,6 +16,29 @@ CONVERSATION_HISTORY_FILE = "memory/conversation_history.json"
 DAILY_STATS_PATH = "memory/daily_stats"
 PENDING_STATS_FILE = "memory/pending_stats.json"
 
+# ============ 模板定义 ============
+MEAL_ENTRY_TEMPLATE = "- {name}: {calories} kcal, {protein}g蛋白"
+WORKOUT_ENTRY_TEMPLATE = "- {type}: {duration}分钟, {calories} kcal"
+DAILY_STATS_TEMPLATE = """# 每日统计 {date}
+
+## 基础数据
+- 总热量: {consumed_calories} kcal
+- 总蛋白质: {consumed_protein} g
+- 总脂肪: {consumed_fat} g
+- 总碳水: {consumed_carbs} g
+- 总消耗: {burned_calories} kcal
+
+## 餐食记录
+{meals}
+
+## 运动记录
+{workouts}
+
+## 剩余
+- 剩余热量: {remaining_calories} kcal
+- 剩余蛋白质: {remaining_protein} g
+"""
+
 # ============ 对话摘要 Prompt ============
 SUMMARIZE_CONVERSATION_PROMPT = """请对以下对话内容进行摘要，提取关键信息。
 
@@ -418,16 +441,36 @@ class MemoryManager:
             remaining_pro = 0
 
         # 格式化餐食记录
-        meals_str = "\n".join(
-            MEAL_ENTRY_TEMPLATE.format(**m) if isinstance(m, dict) else f"- {m}"
-            for m in stats.get("meals", [])
-        ) or "（暂无）"
+        meals_list = []
+        for m in stats.get("meals", []):
+            if isinstance(m, dict):
+                try:
+                    meals_list.append(MEAL_ENTRY_TEMPLATE.format(
+                        name=m.get("name", "未知"),
+                        calories=int(m.get("calories", 0)),
+                        protein=float(m.get("protein", 0))
+                    ))
+                except (KeyError, ValueError):
+                    meals_list.append(f"- {m.get('name', '未知食物')}")
+            else:
+                meals_list.append(f"- {m}")
+        meals_str = "\n".join(meals_list) or "（暂无）"
 
         # 格式化运动记录
-        workouts_str = "\n".join(
-            WORKOUT_ENTRY_TEMPLATE.format(**w) if isinstance(w, dict) else f"- {w}"
-            for w in stats.get("workouts", [])
-        ) or "（暂无）"
+        workouts_list = []
+        for w in stats.get("workouts", []):
+            if isinstance(w, dict):
+                try:
+                    workouts_list.append(WORKOUT_ENTRY_TEMPLATE.format(
+                        type=w.get("type", "未知"),
+                        duration=int(w.get("duration", 0)),
+                        calories=int(w.get("calories", 0))
+                    ))
+                except (KeyError, ValueError):
+                    workouts_list.append(f"- {w.get('type', '未知运动')}")
+            else:
+                workouts_list.append(f"- {w}")
+        workouts_str = "\n".join(workouts_list) or "（暂无）"
 
         content = DAILY_STATS_TEMPLATE.format(
             date=stats.get("date", datetime.now().strftime("%Y-%m-%d")),

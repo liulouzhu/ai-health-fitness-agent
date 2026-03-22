@@ -1,14 +1,12 @@
 import re
 from langchain_core.tools import tool
 from pydantic import BaseModel
-from agent.llm import get_llm, get_embedding_model
+from agent.llm import get_llm
 from agent.state import AgentState
 from config import AgentConfig
-from qdrant_client import QdrantClient
-from llama_index.vector_stores.qdrant import QdrantVectorStore
-from llama_index.core import VectorStoreIndex
 from tools.search_with_tavily import search_with_tavily
 from agent.memory_agent import get_memory_agent
+from tools.retriever import get_hybrid_retriever
 
 WORKOUT_AGENT_PROMPT = """你是一个健身教练专家。请根据以下信息回答用户的问题。
 
@@ -42,41 +40,51 @@ class WorkoutInfo(BaseModel):
     calories: float
 
 
-@tool
-def extract_workout_info(user_input: str) -> WorkoutInfo:
+def _extract_workout_info(self, user_input: str) -> dict:
     """从用户输入中提取运动信息"""
-    return WorkoutInfo(type=user_input, duration=0, calories=0)
+    try:
+        response = self.llm_with_tools.invoke([
+            {"role": "user", "content": f"从以下文本中提取运动信息：{user_input}"}
+        ])
+
+        if response.tool_calls:
+            # 直接从 tool_call 的 arguments 解析
+            tool_call = response.tool_calls[0]
+            args = tool_call.get("args", {}) or tool_call.get("arguments", {})
+            if isinstance(args, str):
+                import json
+                args = json.loads(args)
+            return {
+                "type": args.get("type", "未知运动"),
+                "duration": float(args.get("duration", 0)),
+                "calories": float(args.get("calories", 0))
+            }
+    except Exception as e:
+        print(f"[WorkoutAgent] 解析运动数据失败: {e}")
+
+    return {"type": "未知运动", "duration": 0, "calories": 0}
 
 
 class WorkoutAgent:
     def __init__(self):
         self.llm = get_llm()
-        self.embed_model = get_embedding_model()
         self.memory_agent = get_memory_agent()
-        self.qdrant_client = QdrantClient(host=AgentConfig.QDRANT_HOST, port=AgentConfig.QDRANT_PORT)
         self.collection_name = "fitness_guide"
-        self._vector_store = None
-        self.llm_with_tools = self.llm.bind_tools([extract_workout_info])
+        self._hybrid_retriever = None
+        self.llm_with_tools = self.llm.bind_tools([WorkoutInfo])
 
     @property
-    def vector_store(self):
-        if self._vector_store is None:
-            self._vector_store = QdrantVectorStore(
-                client=self.qdrant_client,
-                collection_name=self.collection_name,
-                embedding=self.embed_model
-            )
-        return self._vector_store
+    def hybrid_retriever(self):
+        if self._hybrid_retriever is None:
+            self._hybrid_retriever = get_hybrid_retriever(self.collection_name)
+        return self._hybrid_retriever
 
     def retrieve_from_qdrant(self, query: str, top_k: int = 3) -> list:
-        """从本地向量数据库检索"""
+        """从本地向量数据库检索（混合搜索：向量 + BM25）"""
         try:
-            index = VectorStoreIndex.from_vector_store(
-                self.vector_store,
-                embed_model=self.embed_model
-            )
-            retriever = index.as_retriever(similarity_top_k=top_k)
-            results = retriever.retrieve(query)
+            # 使用混合检索器，检索更多结果再截取
+            self.hybrid_retriever.fusion_top_k = top_k
+            results = self.hybrid_retriever.retrieve(query)
             return results
         except Exception as e:
             print(f"Qdrant检索失败: {e}")

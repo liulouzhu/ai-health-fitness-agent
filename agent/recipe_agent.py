@@ -1,11 +1,9 @@
-from agent.llm import get_llm, get_embedding_model
+from agent.llm import get_llm
 from config import AgentConfig
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
-from qdrant_client import QdrantClient
-from llama_index.vector_stores.qdrant import QdrantVectorStore
-from llama_index.core import VectorStoreIndex
 from tools.search_with_tavily import search_with_tavily
+from tools.retriever import get_hybrid_retriever
 
 RECIPE_AGENT_PROMPT = """你是一个营养师。根据用户的饮食目标和限制，推荐合适的食谱。
 
@@ -42,31 +40,22 @@ JUDGE_RECIPE_PROMPT = """判断以下检索内容是否足够推荐食谱。
 class RecipeAgent:
     def __init__(self):
         self.llm = get_llm()
-        self.embed_model = get_embedding_model()
         self.memory_agent = get_memory_agent()
-        self.qdrant_client = QdrantClient(host=AgentConfig.QDRANT_HOST, port=AgentConfig.QDRANT_PORT)
         self.collection_name = "recipes"
-        self._vector_store = None
+        self._hybrid_retriever = None
 
     @property
-    def vector_store(self):
-        if self._vector_store is None:
-            self._vector_store = QdrantVectorStore(
-                client=self.qdrant_client,
-                collection_name=self.collection_name,
-                embedding=self.embed_model
-            )
-        return self._vector_store
+    def hybrid_retriever(self):
+        if self._hybrid_retriever is None:
+            self._hybrid_retriever = get_hybrid_retriever(self.collection_name)
+        return self._hybrid_retriever
 
     def retrieve_from_qdrant(self, query: str, top_k: int = 5) -> list:
-        """从本地向量数据库检索食谱"""
+        """从本地向量数据库检索食谱（混合搜索：向量 + BM25）"""
         try:
-            index = VectorStoreIndex.from_vector_store(
-                self.vector_store,
-                embed_model=self.embed_model
-            )
-            retriever = index.as_retriever(similarity_top_k=top_k)
-            results = retriever.retrieve(query)
+            # 使用混合检索器
+            self.hybrid_retriever.fusion_top_k = top_k
+            results = self.hybrid_retriever.retrieve(query)
             return results
         except Exception as e:
             print(f"食谱检索失败: {e}")

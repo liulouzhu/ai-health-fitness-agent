@@ -173,7 +173,7 @@ class RouterAgent:
         """判断用户是否在主动报告吃食物或做运动"""
         if not text:
             return False
-        food_report_words = ["吃了", "吃了点", "吃了碗", "吃了份", "吃了些", "摄入了", "吃进去", "吃了一个", "吃了俩", "干掉", "干饭", "干饭人"]
+        food_report_words = ["吃了", "吃了点", "吃了碗", "吃了份", "吃了些", "摄入了", "吃进去", "吃了一个", "吃了俩", "干掉", "干饭", "喝了"]
         workout_report_words = ["跑了", "跑了步", "做了", "做了运动", "健身了", "练了", "锻炼了", "运动了", "跑步了", "游泳了", "骑车了", "走路了", "跳绳了", "打球了", "健身"]
         text_lower = text.lower()
         return any(word in text_lower for word in food_report_words + workout_report_words)

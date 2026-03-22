@@ -153,7 +153,8 @@ class WorkoutAgent:
                 # 直接保存并返回今日情况
                 self.memory_agent.update_daily_stats("workout", workout_info)
                 summary = self.memory_agent.get_daily_summary()
-                state["response"] = f"已记录。\n\n{summary}"
+                # 先输出运动消耗，再输出今日统计
+                state["response"] = f"{response.content}\n\n---\n已记录。\n\n{summary}"
                 state["pending_stats"] = None
                 self.memory_agent.clear_pending_stats()
             elif workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0:

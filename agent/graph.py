@@ -242,16 +242,26 @@ def create_workflow(checkpointer=None):
         "classify_intent",
         routing_func_multi,
         {
-            "food_node": END,
-            "workout_node": END,
-            "recipe_node": END,
-            "stats_node": END,
-            "confirm_node": END,
-            "profile_node": END,
-            "general_node": END,
-            "multi_intent_node": END,
+            "food_node": "food_node",
+            "workout_node": "workout_node",
+            "recipe_node": "recipe_node",
+            "stats_node": "stats_node",
+            "confirm_node": "confirm_node",
+            "profile_node": "profile_node",
+            "general_node": "general_node",
+            "multi_intent_node": "multi_intent_node",
         }
     )
+
+    # 各节点执行完后流向 END
+    builder.add_edge("food_node", END)
+    builder.add_edge("workout_node", END)
+    builder.add_edge("recipe_node", END)
+    builder.add_edge("stats_node", END)
+    builder.add_edge("confirm_node", END)
+    builder.add_edge("profile_node", END)
+    builder.add_edge("general_node", END)
+    builder.add_edge("multi_intent_node", END)
 
     # 编译时添加 checkpointer（如果传入）
     if checkpointer:

@@ -1,5 +1,6 @@
 """
 混合检索模块：结合向量检索 + BM25，使用 RRF 融合
+支持 Query 改写
 """
 import os
 import sys
@@ -17,6 +18,20 @@ from rank_bm25 import BM25Okapi
 import jieba
 
 from config import AgentConfig
+
+
+# Query 改写提示词
+REWRITE_QUERY_PROMPT = """将用户问题改写为更适合健身知识库检索的形式。
+
+要求：
+1. 补充隐含意图（如"我想瘦点"→"减脂方法"）
+2. 扩展同义词（如"练胸"→"胸部训练 胸肌"）
+3. 分解复杂问题
+4. 使用知识库常用的专业术语
+
+原始问题：{query}
+
+改写后的检索 query（只返回改写后的 query，不要其他内容）："""
 
 
 @dataclass
@@ -219,6 +234,41 @@ class VectorRetriever:
         return retrieved
 
 
+class QueryRewriter:
+    """Query 改写器 - 将用户自然语言改写为更适合知识库检索的形式"""
+
+    def __init__(self):
+        self._llm = None
+
+    @property
+    def llm(self):
+        if self._llm is None:
+            from agent.llm import get_llm
+            self._llm = get_llm()
+        return self._llm
+
+    def rewrite(self, query: str) -> str:
+        """
+        改写 query
+
+        Args:
+            query: 原始用户 query
+
+        Returns:
+            改写后的 query
+        """
+        try:
+            prompt = REWRITE_QUERY_PROMPT.format(query=query)
+            response = self.llm.invoke([{"role": "user", "content": prompt}])
+            # 提取返回的 query（去除空白字符）
+            rewritten = response.content.strip()
+            print(f"[QueryRewriter] '{query}' → '{rewritten}'")
+            return rewritten
+        except Exception as e:
+            print(f"[QueryRewriter] 改写失败，使用原 query: {e}")
+            return query
+
+
 def reciprocal_rank_fusion(results_list: list[list[RetrievedChunk]], k: int = 60) -> list[RetrievedChunk]:
     """
     RRF (Reciprocal Rank Fusion) 融合多个检索结果
@@ -243,24 +293,28 @@ def reciprocal_rank_fusion(results_list: list[list[RetrievedChunk]], k: int = 60
 
 
 class HybridRetriever:
-    """混合检索器：向量 + BM25 + RRF 融合"""
+    """混合检索器：向量 + BM25 + RRF 融合 + 可选 Query 改写"""
 
     def __init__(
         self,
         collection_name: str,
         qdrant_client: QdrantClient,
         embed_model,
-        vector_top_k: int = 20,
-        bm25_top_k: int = 20,
-        fusion_top_k: int = 5
+        vector_top_k: int = None,
+        bm25_top_k: int = None,
+        fusion_top_k: int = None,
+        use_query_rewrite: bool = None
     ):
         self.collection_name = collection_name
-        self.vector_top_k = vector_top_k
-        self.bm25_top_k = bm25_top_k
-        self.fusion_top_k = fusion_top_k
+        # 从 config 读取默认值
+        self.vector_top_k = vector_top_k if vector_top_k is not None else AgentConfig.VECTOR_TOP_K
+        self.bm25_top_k = bm25_top_k if bm25_top_k is not None else AgentConfig.BM25_TOP_K
+        self.fusion_top_k = fusion_top_k if fusion_top_k is not None else AgentConfig.FUSION_TOP_K
+        self.use_query_rewrite = use_query_rewrite if use_query_rewrite is not None else AgentConfig.USE_QUERY_REWRITE
 
         self.vector_retriever = VectorRetriever(collection_name, qdrant_client, embed_model)
         self.bm25_retriever = BM25Retriever(collection_name, qdrant_client)
+        self.query_rewriter = QueryRewriter() if self.use_query_rewrite else None
 
     def retrieve(self, query: str) -> list[RetrievedChunk]:
         """
@@ -269,6 +323,10 @@ class HybridRetriever:
         Returns:
             按 RRF 分数排序的检索结果
         """
+        # Query 改写
+        if self.use_query_rewrite and self.query_rewriter:
+            query = self.query_rewriter.rewrite(query)
+
         # 并行执行向量检索和 BM25 检索
         vector_results = self.vector_retriever.retrieve(query, self.vector_top_k)
         bm25_results = self.bm25_retriever.retrieve(query, self.bm25_top_k)
@@ -282,12 +340,18 @@ class HybridRetriever:
         """
         执行混合检索，返回详细分数信息（用于调试）
         """
+        # Query 改写
+        original_query = query
+        if self.use_query_rewrite and self.query_rewriter:
+            query = self.query_rewriter.rewrite(query)
+
         vector_results = self.vector_retriever.retrieve(query, self.vector_top_k)
         bm25_results = self.bm25_retriever.retrieve(query, self.bm25_top_k)
         fused_results = reciprocal_rank_fusion([vector_results, bm25_results])
 
         return {
-            "query": query,
+            "original_query": original_query,
+            "rewritten_query": query,
             "vector_results": [
                 {"id": r.id, "text": r.text[:100] + "...", "score": r.score, "metadata": r.metadata}
                 for r in vector_results

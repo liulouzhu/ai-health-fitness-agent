@@ -22,3 +22,9 @@ class AgentConfig:
     # Qdrant 配置
     QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
     QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
+
+    # 检索配置
+    VECTOR_TOP_K = 20           # 向量检索返回数量
+    BM25_TOP_K = 20             # BM25 检索返回数量
+    FUSION_TOP_K = 5            # 融合后返回数量
+    USE_QUERY_REWRITE = True    # 是否启用 Query 改写

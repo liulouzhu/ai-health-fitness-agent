@@ -170,13 +170,14 @@ def multi_intent_node(state: AgentState) -> AgentState:
             workout_state = workout_future.result()
 
         # 合并结果
+        # 注意：用 response 而不是 *_result，因为 response 包含确认提示文案
         responses = []
-        if food_state.get("food_result"):
-            responses.append(food_state["food_result"])
-            state["food_result"] = food_state["food_result"]
-        if workout_state.get("workout_result"):
-            responses.append(workout_state["workout_result"])
-            state["workout_result"] = workout_state["workout_result"]
+        if food_state.get("response"):
+            responses.append(food_state["response"])
+            state["food_result"] = food_state.get("food_result")
+        if workout_state.get("response"):
+            responses.append(workout_state["response"])
+            state["workout_result"] = workout_state.get("workout_result")
 
         # 合并 pending_stats（两个都可能设置）
         if food_state.get("pending_stats") and workout_state.get("pending_stats"):
@@ -225,7 +226,7 @@ def multi_intent_node(state: AgentState) -> AgentState:
         if stats_state.get("response"):
             responses.append(stats_state["response"])
 
-        state["pending_stats"] = stats_state.get("pending_stats")
+        # pending_stats 保留 food_state 的结果（stats_state 不产生 pending，不会覆盖）
         state["response"] = "\n\n".join(responses) if responses else "已处理您的请求。"
 
     elif has_workout and has_stats:
@@ -255,7 +256,7 @@ def multi_intent_node(state: AgentState) -> AgentState:
         if stats_state.get("response"):
             responses.append(stats_state["response"])
 
-        state["pending_stats"] = stats_state.get("pending_stats")
+        # pending_stats 保留 workout_state 的结果（stats_state 不产生 pending，不会覆盖）
         state["response"] = "\n\n".join(responses) if responses else "已处理您的请求。"
 
     elif has_food:

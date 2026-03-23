@@ -133,12 +133,14 @@ async def chat_stream(request: ChatRequest):
 
             messages = restored_state.get("messages", [])
             profile_complete = restored_state.get("profile_complete", True)
+            last_intent = restored_state.get("last_intent")
 
             # 先分类意图
             classify_state = {
                 "input_message": request.message,
                 "messages": messages,
                 "profile_complete": profile_complete,
+                "last_intent": last_intent,
                 "image_info": {"has_image": request.image_url is not None, "image_url": request.image_url}
             }
             classify_state = RouterAgent().classify_intent(classify_state)
@@ -162,6 +164,11 @@ async def chat_stream(request: ChatRequest):
                 for char in response_text:
                     yield f"data: {char}\n\n"
                 yield f"data: [DONE]\n\n"
+                # 与 general 分支保持一致：写入历史、抽取偏好、触发摘要
+                memory_agent.add_conversation_turn(request.message, response_text)
+                memory_agent.extract_and_save_preferences(request.message)
+                if memory_agent.should_summarize(threshold=10):
+                    memory_agent.summarize_conversations()
                 return
 
             # 如果是运动报告或运动查询
@@ -178,6 +185,10 @@ async def chat_stream(request: ChatRequest):
                 for char in response_text:
                     yield f"data: {char}\n\n"
                 yield f"data: [DONE]\n\n"
+                memory_agent.add_conversation_turn(request.message, response_text)
+                memory_agent.extract_and_save_preferences(request.message)
+                if memory_agent.should_summarize(threshold=10):
+                    memory_agent.summarize_conversations()
                 return
 
             if not profile_complete:
@@ -333,6 +344,10 @@ async def create_or_update_profile(request: ProfileRequest):
         updates.append(f"目标{request.goal}")
 
     message = "，".join(updates)
+
+    # 空更新保护
+    if not message:
+        return {"message": "没有要更新的字段，请至少传入身高、体重、年龄、性别或目标之一。", "profile": None}
 
     # 判断是创建还是更新
     profile = memory_agent.load_profile()

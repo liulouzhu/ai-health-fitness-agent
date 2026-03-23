@@ -224,11 +224,19 @@ class RouterAgent:
         is_yes = any(word in user_input for word in ["是", "好的", "记录", "yes", "确认", "计入", "算", "嗯", "ok", "okay"])
 
         if is_yes:
-            # 保存统计
-            self.memory_agent.update_daily_stats(pending["type"], pending["data"])
-            summary = self.memory_agent.get_daily_summary()
-            state["response"] = f"已计入统计。\n\n{summary}"
-            print(f"[Router] handle_confirm - 用户确认，已计入统计")
+            # 保存统计（支持 multi 类型：同时保存 food 和 workout）
+            if pending.get("type") == "multi":
+                if pending.get("food"):
+                    self.memory_agent.update_daily_stats("meal", pending["food"])
+                if pending.get("workout"):
+                    self.memory_agent.update_daily_stats("workout", pending["workout"])
+                state["response"] = "已计入统计（食物+运动）。\n\n" + self.memory_agent.get_daily_summary()
+                print(f"[Router] handle_confirm - 用户确认，已计入 food + workout")
+            else:
+                self.memory_agent.update_daily_stats(pending["type"], pending["data"])
+                summary = self.memory_agent.get_daily_summary()
+                state["response"] = f"已计入统计。\n\n{summary}"
+                print(f"[Router] handle_confirm - 用户确认，已计入统计")
         else:
             # 取消
             state["response"] = f"好的，已取消。"

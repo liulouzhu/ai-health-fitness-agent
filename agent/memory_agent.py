@@ -351,7 +351,11 @@ class MemoryManager:
 
     def _parse_daily_stats(self, content: str) -> dict:
         """解析markdown格式的每日统计"""
-        stats = self._get_empty_daily_stats()
+        # 先从文件内容中提取日期，避免用"今天"覆盖历史日期
+        date_match = re.search(r'# 每日统计\s+(\d{4}-\d{2}-\d{2})', content)
+        date = date_match.group(1) if date_match else datetime.now().strftime("%Y-%m-%d")
+
+        stats = self._get_empty_daily_stats(date)
 
         lines = content.split("\n")
         current_section = None
@@ -388,8 +392,8 @@ class MemoryManager:
         return stats
 
     def _extract_number(self, line: str) -> str:
-        """从行中提取数字"""
-        match = re.search(r'\d+', line)
+        """从行中提取数字（支持整数和小数）"""
+        match = re.search(r'\d+\.?\d*', line)
         return match.group() if match else "0"
 
     def _parse_meal_line(self, line: str) -> dict | None:
@@ -560,8 +564,8 @@ class MemoryManager:
         target_cal = int(profile.get("target_calories", 2000))
         target_pro = int(profile.get("target_protein", 100))
 
-        # 剩余热量 = 目标 - 已摄入（不考虑运动，运动产生的是热量缺口）
-        remaining_cal = max(0, target_cal - stats["consumed_calories"])
+        # 剩余热量 = 目标 - 已摄入 + 运动消耗（与 /daily_stats 接口口径一致）
+        remaining_cal = max(0, target_cal - stats["consumed_calories"] + stats["burned_calories"])
         remaining_pro = max(0, target_pro - stats["consumed_protein"])
 
         # 热量缺口 = 已摄入 - 运动消耗（负数表示有缺口）
@@ -704,15 +708,15 @@ class MemoryManager:
         lines.append("")
 
         lines.append("## 饮食限制")
-        lines.append(f"- {', '.join(prefs['dietary_restrictions']) or '（无）'}")
+        lines.append(f"- 饮食限制: {', '.join(prefs['dietary_restrictions']) or '（无）'}")
         lines.append("")
 
         lines.append("## 作息偏好")
-        lines.append(f"- {', '.join(prefs['schedule_preferences']) or '（无）'}")
+        lines.append(f"- 作息偏好: {', '.join(prefs['schedule_preferences']) or '（无）'}")
         lines.append("")
 
         lines.append("## 其他")
-        lines.append(f"- {', '.join(prefs['other']) or '（无）'}")
+        lines.append(f"- 其他: {', '.join(prefs['other']) or '（无）'}")
 
         return "\n".join(lines)
 
@@ -814,39 +818,58 @@ class MemoryManager:
             return {"success": False, "reason": str(e)}
 
     def _merge_preferences(self, new_prefs: dict) -> None:
-        """将新的偏好合并到现有偏好（去重追加）"""
+        """将新的偏好合并到现有偏好（去重追加 + 冲突消解）
+
+        当某项出现在冲突集合中（如 liked vs disliked）时，后出现的意见覆盖先前的。
+        """
         current = self.load_preferences()
 
         # 食物偏好
+        food_conflict_pairs = [
+            ("liked", "disliked"),
+            ("disliked", "liked"),
+            ("liked", "allergies"),   # 对某食物过敏则不可能喜欢它
+            ("disliked", "allergies"),
+        ]
         for key in ["liked", "disliked", "allergies"]:
             new_items = new_prefs.get("food_preferences", {}).get(key, [])
             existing = set(current["food_preferences"][key])
             for item in new_items:
-                if item and item not in existing:
-                    current["food_preferences"][key].append(item)
+                if not item or item in existing:
+                    continue
+                # 先从冲突集合中移除（冲突消解）
+                for other_key, conflict_key in food_conflict_pairs:
+                    if key == other_key and item in current["food_preferences"][conflict_key]:
+                        current["food_preferences"][conflict_key].remove(item)
+                current["food_preferences"][key].append(item)
 
-        # 运动偏好
+        # 运动偏好（liked / disliked 之间也会冲突）
+        workout_conflict_pairs = [("liked", "disliked"), ("disliked", "liked")]
         for key in ["liked", "disliked", "available_equipment", "limitations"]:
             new_items = new_prefs.get("workout_preferences", {}).get(key, [])
             existing = set(current["workout_preferences"][key])
             for item in new_items:
-                if item and item not in existing:
-                    current["workout_preferences"][key].append(item)
+                if not item or item in existing:
+                    continue
+                for other_key, conflict_key in workout_conflict_pairs:
+                    if key == other_key and item in current["workout_preferences"][conflict_key]:
+                        current["workout_preferences"][conflict_key].remove(item)
+                current["workout_preferences"][key].append(item)
 
-        # 饮食限制
+        # 饮食限制：后出现的覆盖先前的（多次出现的以最后一次为准）
         new_restrictions = new_prefs.get("dietary_restrictions", [])
         existing_restrictions = set(current["dietary_restrictions"])
         for item in new_restrictions:
             if item and item not in existing_restrictions:
                 current["dietary_restrictions"].append(item)
 
-        # 作息偏好
+        # 作息偏好：同饮食限制
         new_schedule = new_prefs.get("schedule_preferences", [])
         for item in new_schedule:
             if item and item not in current["schedule_preferences"]:
                 current["schedule_preferences"].append(item)
 
-        # 其他偏好
+        # 其他偏好：同饮食限制
         new_other = new_prefs.get("other", [])
         for item in new_other:
             if item and item not in current["other"]:
@@ -952,6 +975,15 @@ class MemoryManager:
 
         return data["conversations"][-limit:]
 
+    def _get_full_conversation_history(self) -> list:
+        """获取完整对话历史（不受 limit 截断，用于摘要逻辑）"""
+        self._ensure_conversation_file()
+
+        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return data["conversations"]
+
     def get_message_count(self) -> int:
         """获取对话消息计数"""
         self._ensure_conversation_file()
@@ -996,18 +1028,22 @@ class MemoryManager:
         if not force and not self.should_summarize(threshold):
             return None
 
-        # 获取所有未摘要的对话
+        # 获取所有未摘要的对话（用完整列表以避免 offset 漂移）
         last_summary = self._get_last_summary_info()
         start_count = last_summary["message_count"] if last_summary else 0
 
-        history = self.get_conversation_history(limit=100)
-        if len(history) <= start_count:
+        full_history = self._get_full_conversation_history()
+        if len(full_history) <= start_count:
             return None
 
-        # 构建待摘要的对话文本
+        # 构建待摘要的对话文本（最多取最近 N 条避免单次 prompt 过长）
+        MAX_SUMMARY_TURNS = 20
+        unsummarized = full_history[start_count:]
+        turns_to_summarize = unsummarized[-MAX_SUMMARY_TURNS:] if len(unsummarized) > MAX_SUMMARY_TURNS else unsummarized
+
         conversation_text = "\n".join([
             f"用户: {turn['user']}\n助手: {turn['agent']}"
-            for turn in history[start_count:]
+            for turn in turns_to_summarize
         ])
 
         prompt = SUMMARIZE_CONVERSATION_PROMPT.format(
@@ -1082,8 +1118,8 @@ class MemoryManager:
         if not summaries:
             return ""
 
-        # 取最近的
-        recent = summaries[-limit:]
+        # 取最近的（新摘要插在文件顶部，summaries[0] 是最新的，所以取头部）
+        recent = summaries[:limit]
         context_parts = []
 
         for date, summary in recent:
@@ -1100,11 +1136,16 @@ class MemoryManager:
         with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        if len(data["conversations"]) > keep_recent:
+        # keep_recent=0 表示全部清除（[-0:] 等于 [0:]，会保留全部，需要特殊处理）
+        if keep_recent == 0:
+            data["conversations"] = []
+            data["message_count"] = 0
+        elif len(data["conversations"]) > keep_recent:
             data["conversations"] = data["conversations"][-keep_recent:]
+            data["message_count"] = len(data["conversations"])
 
-            with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+        with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 # 便捷函数

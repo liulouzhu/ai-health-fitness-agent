@@ -20,7 +20,7 @@ def get_vlm():
 
 def get_embedding_model():
     embedding_model = DashScopeEmbedding(
-        model="text-embedding-v3",
+        model=AgentConfig.EMBEDDING_MODEL or "text-embedding-v3",
         api_key=AgentConfig.LLM_API_KEY
     )
     return embedding_model

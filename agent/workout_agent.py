@@ -173,4 +173,10 @@ class WorkoutAgent:
             state["response"] = "抱歉，健身指导服务暂时不可用，请稍后重试。"
             state["workout_result"] = None
             state["pending_stats"] = None
+
+        # 更新对话历史，使后续追问能继承上下文
+        state["messages"] = state.get("messages", []) + [
+            {"role": "user", "content": state["input_message"]},
+            {"role": "assistant", "content": state.get("response", "")}
+        ]
         return state

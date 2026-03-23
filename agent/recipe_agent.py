@@ -50,6 +50,41 @@ class RecipeAgent:
             self._hybrid_retriever = get_hybrid_retriever(self.collection_name)
         return self._hybrid_retriever
 
+    def _extract_constraints_from_input(self, user_input: str) -> str:
+        """从用户输入中提取检索约束词（餐次、食材、口味、烹饪方式等）
+
+        这些约束词会拼入检索 query，提高召回相关性。
+        """
+        import re
+        constraints = []
+
+        # 餐次
+        meal_times = ["早餐", "午饭", "午餐", "晚饭", "晚餐", "宵夜", "夜宵", "加餐", "点心"]
+        for m in meal_times:
+            if m in user_input:
+                constraints.append(m)
+
+        # 常见食材
+        ingredients = ["鸡胸肉", "牛肉", "鱼肉", "虾", "鸡蛋", "豆腐", "蔬菜", "西兰花", "菠菜",
+                       "米饭", "面条", "面包", "红薯", "土豆", "藜麦", "牛油果", "坚果"]
+        for ing in ingredients:
+            if ing in user_input:
+                constraints.append(ing)
+
+        # 口味/做法要求
+        tastes = ["不要辣", "不辣", "微辣", "少油", "清淡", "重口", "麻辣", "咖喱", "蒜香"]
+        for t in tastes:
+            if t in user_input:
+                constraints.append(t)
+
+        # 烹饪方式
+        methods = ["蒸", "煮", "炒", "烤", "煎", "炸", "拌", "炖", "快手", "简单", "容易", "做得快"]
+        for m in methods:
+            if m in user_input:
+                constraints.append(m)
+
+        return "、".join(constraints)
+
     def retrieve_from_qdrant(self, query: str, top_k: int = 5) -> list:
         """从本地向量数据库检索食谱（混合搜索：向量 + BM25）"""
         try:
@@ -117,8 +152,13 @@ class RecipeAgent:
             # 获取推荐上下文
             context = self.get_recommendation_context()
 
-            # 构建检索query
-            query = f"剩余{context['remaining_calories']}卡路里，{context['remaining_protein']}克蛋白质的食谱推荐，健身{context['goal']}"
+            # 构建检索query：融合用户原始需求 + 营养约束 + 目标
+            # 从用户输入中提取约束词（餐次、食材、口味、烹饪方式等）
+            user_input = state.get("input_message", "")
+            user_constraints = self._extract_constraints_from_input(user_input)
+            constraints_str = f"，{user_constraints}" if user_constraints else ""
+
+            query = f"{user_input}，剩余{context['remaining_calories']}卡路里，{context['remaining_protein']}克蛋白质，健身{context['goal']}{constraints_str}"
 
             # 1. 首先从本地向量数据库检索
             retrieved_results = self.retrieve_from_qdrant(query)
@@ -150,4 +190,10 @@ class RecipeAgent:
         except Exception as e:
             print(f"[RecipeAgent] 错误: {e}")
             state["response"] = "抱歉，食谱推荐服务暂时不可用，请稍后重试。"
+
+        # 更新对话历史，使后续追问能继承上下文
+        state["messages"] = state.get("messages", []) + [
+            {"role": "user", "content": state["input_message"]},
+            {"role": "assistant", "content": state.get("response", "")}
+        ]
         return state

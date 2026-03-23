@@ -281,10 +281,19 @@ async def chat_stream(request: ChatRequest):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-def _update_graph_state(config: dict, messages: list, last_intent: str, profile_complete: bool):
-    """将更新后的状态写回 LangGraph checkpointer（同步调用）"""
+def _update_graph_state(config: dict, messages: list, last_intent: str, profile_complete: bool, app=None):
+    """将更新后的状态写回 LangGraph checkpointer（同步调用）
+
+    Args:
+        config: LangGraph config dict with thread_id
+        messages: updated messages list
+        last_intent: last intent string
+        profile_complete: whether profile is complete
+        app: optional LangGraph app instance (defaults to module-level app_obj)
+    """
     try:
-        app_obj.update_state(
+        target_app = app if app is not None else app_obj
+        target_app.update_state(
             config,
             {
                 "messages": messages,

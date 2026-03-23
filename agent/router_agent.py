@@ -279,14 +279,20 @@ class RouterAgent:
                 {"role": "user", "content": state["input_message"]}
             ]
 
-            response = self.llm.invoke(llm_messages)
+            # 使用 stream() 获取流式响应
+            stream_resp = self.llm.stream(llm_messages)
+            # 收集完整响应
+            full_response = ""
+            for chunk in stream_resp:
+                if chunk.content:
+                    full_response += chunk.content
 
-            state["response"] = response.content
+            state["response"] = full_response
 
             # 将本次对话添加到历史
             state["messages"] = messages + [
                 {"role": "user", "content": state["input_message"]},
-                {"role": "assistant", "content": response.content}
+                {"role": "assistant", "content": full_response}
             ]
             print(f"[Router] handle_general - 更新后 messages 数量: {len(state['messages'])}")
         except Exception as e:

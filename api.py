@@ -2,14 +2,16 @@ import sys
 sys.path.insert(0, ".")
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
 
-from langgraph.checkpoint.memory import InMemorySaver
 from agent.graph import create_workflow
 from agent.memory_agent import get_memory_agent
+from agent.router_agent import RouterAgent
+from agent.llm import get_llm
 
 # 创建 FastAPI 应用
 app = FastAPI(
@@ -26,9 +28,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局 checkpointer 和 app
-checkpointer = InMemorySaver()
-app_obj = create_workflow(checkpointer=checkpointer)
+# 全局 app（暂时禁用 checkpointer 以排查流式输出问题）
+app_obj = create_workflow()
 memory_agent = get_memory_agent()
 
 
@@ -93,16 +94,162 @@ class DailyStatsResponse(BaseModel):
     remaining_protein: float
 
 
+# ============ 测试流式接口 ============
+
+@app.get("/test/stream")
+async def test_stream():
+    """测试流式输出"""
+    async def generate():
+        text = "这是一段测试文字，用来验证流式输出是否正常工作。每个字之间有延迟。"
+        for char in text:
+            yield f"data: {char}\n\n"
+            import asyncio
+            await asyncio.sleep(0.05)  # 50ms 延迟
+        yield f"data: [DONE]\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 # ============ 对话接口 ============
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """流式对话接口 - 直接流式输出 LLM token"""
+    async def generate():
+        try:
+            # 直接使用 LLM 流式响应
+            llm = get_llm()
+
+            # 获取上下文信息
+            config = {"configurable": {"thread_id": "default"}}
+            restored_state = {}
+            try:
+                current_state = app_obj.get_state(config=config)
+                if current_state is not None:
+                    state_data = getattr(current_state, 'values', None)
+                    if state_data and isinstance(state_data, dict):
+                        restored_state = state_data
+            except Exception:
+                restored_state = {}
+
+            messages = restored_state.get("messages", [])
+            profile_complete = restored_state.get("profile_complete", True)
+
+            # 先分类意图
+            classify_state = {
+                "input_message": request.message,
+                "messages": messages,
+                "profile_complete": profile_complete,
+                "image_info": {"has_image": request.image_url is not None, "image_url": request.image_url}
+            }
+            classify_state = RouterAgent().classify_intent(classify_state)
+            intent = classify_state.get("intent", "general")
+
+            # 发送意图
+            yield f"data: {{\"intent\": \"{intent}\"}}\n\n"
+
+            # 如果是食物报告或食物查询，走完整的 food_agent 流程
+            if intent in ("food_report", "food"):
+                food_state = {
+                    "input_message": request.message,
+                    "messages": messages,
+                    "image_info": {"has_image": request.image_url is not None, "image_url": request.image_url},
+                    "intent": intent
+                }
+                from agent.food_agent import FoodAgent
+                food_agent = FoodAgent()
+                food_state = food_agent.run(food_state)
+                response_text = food_state.get("response", "")
+                for char in response_text:
+                    yield f"data: {char}\n\n"
+                yield f"data: [DONE]\n\n"
+                return
+
+            # 如果是运动报告或运动查询
+            if intent in ("workout_report", "workout"):
+                workout_state = {
+                    "input_message": request.message,
+                    "messages": messages,
+                    "intent": intent
+                }
+                from agent.workout_agent import WorkoutAgent
+                workout_agent = WorkoutAgent()
+                workout_state = workout_agent.run(workout_state)
+                response_text = workout_state.get("response", "")
+                for char in response_text:
+                    yield f"data: {char}\n\n"
+                yield f"data: [DONE]\n\n"
+                return
+
+            if not profile_complete:
+                # 档案不完整，询问用户
+                initial_response = memory_agent.get_initial_questions()
+                for char in initial_response:
+                    yield f"data: {char}\n\n"
+                yield f"data: [DONE]\n\n"
+                return
+
+            # 构建对话历史字符串
+            history_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages[-10:]])
+
+            # 获取用户偏好
+            preferences = memory_agent.get_preferences_for_context()
+            if not preferences:
+                preferences = "（暂无偏好记录）"
+
+            # 获取长期记忆
+            longterm_memory = memory_agent.get_longterm_memory_context(limit=3)
+            if not longterm_memory:
+                longterm_memory = "（暂无长期记忆）"
+
+            prompt = f"""你是一个健身健康智能助手，可以进行日常对话。
+
+用户偏好（请在回复中注意）：
+{preferences}
+
+长期记忆（请在回复中参考）：
+{longterm_memory}
+
+对话历史：
+{history_str}
+
+用户：{request.message}
+
+请回复用户，保持对话连贯性。如果用户问到健身或饮食相关问题，可以适当引导。注意根据用户偏好选择合适的食物和运动建议。"""
+
+            # 使用 LLM 流式输出
+            full_response = ""
+            llm_messages = [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": request.message}
+            ]
+
+            for chunk in llm.stream(llm_messages):
+                if chunk.content:
+                    full_response += chunk.content
+                    yield f"data: {chunk.content}\n\n"
+
+            yield f"data: [DONE]\n\n"
+
+            # 保存对话历史
+            memory_agent.add_conversation_turn(request.message, full_response)
+            memory_agent.extract_and_save_preferences(request.message)
+            if memory_agent.should_summarize(threshold=10):
+                memory_agent.summarize_conversations()
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            error_msg = f"错误: {str(e)}"
+            yield f"data: {error_msg}\n\n"
+            yield f"data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.post("/chat")
 async def chat(request: ChatRequest):
     """与智能助手对话"""
     try:
-        print(f"\n{'='*60}")
-        print(f"[API] 收到新请求: {request.message[:30]}...")
-        print(f"{'='*60}")
-
         config = {"configurable": {"thread_id": "default"}}
 
         # 尝试获取已保存的状态
@@ -113,13 +260,10 @@ async def chat(request: ChatRequest):
                 state_data = getattr(current_state, 'values', None)
                 if state_data and isinstance(state_data, dict):
                     restored_state = state_data
-                    print(f"[DEBUG] 恢复状态: last_intent={state_data.get('last_intent')}, messages数量={len(state_data.get('messages', []))}")
-        except Exception as e:
-            import traceback
-            print(f"[WARN] 获取历史状态失败: {e}")
-            traceback.print_exc()
+        except Exception:
+            restored_state = {}
 
-        # 构建状态 - 使用恢复的状态，确保 last_intent 和 messages 不丢失
+        # 构建状态
         state = {
             "input_message": request.message,
             "image_info": {
@@ -131,35 +275,22 @@ async def chat(request: ChatRequest):
             "profile_complete": restored_state.get("profile_complete", True),
         }
 
-        print(f"[DEBUG] 调用 invoke - input: '{request.message[:30]}...', last_intent: {state['last_intent']}, messages数量: {len(state['messages'])}")
-
+        # 使用 invoke（同步）
         result = app_obj.invoke(state, config=config)
-
-        result_messages = result.get("messages", [])
-        print(f"[DEBUG] invoke 完成 - intent: {result.get('intent')}, last_intent: {result.get('last_intent')}, result messages数量: {len(result_messages)}")
-
-        # ============ 长期记忆处理 ============
         response_text = result.get("response", "")
+        intent = result.get("intent")
 
-        # 1. 记录对话历史
+        # 长期记忆处理
         memory_agent.add_conversation_turn(request.message, response_text)
-
-        # 2. 从用户消息中提取偏好并保存
         memory_agent.extract_and_save_preferences(request.message)
-
-        # 3. 检查是否需要摘要（每10条消息触发一次）
         if memory_agent.should_summarize(threshold=10):
-            summary_result = memory_agent.summarize_conversations()
-            if summary_result:
-                print(f"[Memory] 对话已摘要: {summary_result.get('summary', '')[:50]}...")
+            memory_agent.summarize_conversations()
 
-        return ChatResponse(
-            response=response_text,
-            intent=result.get("intent")
-        )
+        # 返回完整响应
+        return {"response": response_text, "intent": intent}
+
     except Exception as e:
         import traceback
-        print("[ERROR] Chat endpoint error:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 

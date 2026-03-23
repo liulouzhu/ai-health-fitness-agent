@@ -696,7 +696,7 @@ class MemoryManager:
             return {"updated": False}
 
         # 合并到现有偏好
-        current = self.load_preferences()
+        current = self.load_preferences() 
 
         # 食物偏好
         for key in ["liked", "disliked", "allergies"]:

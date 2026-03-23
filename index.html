@@ -353,21 +353,57 @@
             sendBtn.innerHTML = '<span class="loading"></span>';
 
             try {
-                const response = await fetch(`${API_BASE}/chat`, {
+                const response = await fetch(`${API_BASE}/chat/stream`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({message})
                 });
 
-                const data = await response.json();
+                // 创建 assistant 消息元素
+                const assistantDiv = document.createElement('div');
+                assistantDiv.className = 'message assistant';
+                assistantDiv.innerHTML = '';
+                chatBox.appendChild(assistantDiv);
 
-                if (data.intent) {
-                    addMessage('intent', `意图: ${data.intent}`);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let responseText = '';
+                let intentShown = false;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6).trim();
+                            if (data === '[DONE]') {
+                                // 流式结束
+                            } else if (data.startsWith('{') && data.includes('intent')) {
+                                // 第一个 chunk 是 intent 元数据
+                                try {
+                                    const meta = JSON.parse(data);
+                                    if (meta.intent && !intentShown) {
+                                        addMessage('intent', `意图: ${meta.intent}`);
+                                        intentShown = true;
+                                    }
+                                } catch (e) {
+                                    responseText += data;
+                                }
+                            } else {
+                                responseText += data;
+                                assistantDiv.innerHTML = formatMessage(responseText);
+                                chatBox.scrollTop = chatBox.scrollHeight;
+                            }
+                        }
+                    }
                 }
-                addMessage('assistant', data.response);
 
             } catch (e) {
-                errorDiv.innerHTML = `<div class="error">错误: ${e.message}</div>`;
+                addMessage('assistant', `<span style="color:#f44336;">错误: ${e.message}</span>`);
             } finally {
                 sendBtn.disabled = false;
                 sendBtn.innerHTML = '发送';
@@ -378,7 +414,12 @@
             const chatBox = document.getElementById('chatBox');
             const div = document.createElement('div');
             div.className = `message ${type}`;
+            div.innerHTML = formatMessage(content);
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
 
+        function formatMessage(content) {
             // 简单的 markdown 渲染
             let html = content
                 .replace(/&/g, '&amp;')
@@ -387,10 +428,7 @@
                 .replace(/\n/g, '<br>')
                 .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                 .replace(/---/g, '<hr>');
-
-            div.innerHTML = html;
-            chatBox.appendChild(div);
-            chatBox.scrollTop = chatBox.scrollHeight;
+            return html;
         }
 
         function handleKeyPress(e) {

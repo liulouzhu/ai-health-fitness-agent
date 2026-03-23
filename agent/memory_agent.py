@@ -16,6 +16,42 @@ CONVERSATION_HISTORY_FILE = "memory/conversation_history.json"
 DAILY_STATS_PATH = "memory/daily_stats"
 PENDING_STATS_FILE = "memory/pending_stats.json"
 
+# ============ 偏好批量整合配置 ============
+PENDING_PREFERENCES_FILE = "memory/pending_preferences.json"
+CONSOLIDATION_THRESHOLD = 10  # 每 N 条消息触发一次整合
+
+# ============ 整合用的 Prompt ============
+CONSOLIDATE_PREFERENCES_PROMPT = """你是一个偏好整合专家。请从以下多条用户消息中整合出完整的用户偏好。
+
+现有偏好（参考，保持不变）：
+{current_preferences}
+
+待处理的用户消息（按时间顺序）：
+{messages}
+
+请分析所有消息，提取并返回JSON格式的完整偏好（只返回JSON）：
+{{
+    "food_preferences": {{
+        "liked": ["喜欢的食物（去重后）"],
+        "disliked": ["不喜欢或不能吃的食物（去重后）"],
+        "allergies": ["食物过敏（去重后）"]
+    }},
+    "workout_preferences": {{
+        "liked": ["喜欢的运动类型（去重后）"],
+        "disliked": ["不喜欢或不适合的运动（去重后）"],
+        "available_equipment": ["可用的健身设备（去重后）"],
+        "limitations": ["运动限制或伤病（去重后）"]
+    }},
+    "dietary_restrictions": ["饮食限制（去重后）"],
+    "schedule_preferences": ["作息偏好（去重后）"],
+    "other": ["其他偏好（去重后）"]
+}}
+
+注意：
+1. 保留现有偏好中不冲突的内容
+2. 只新增新发现的信息，不要删除已有的有效信息
+3. 对类似的信息进行去重合并"""
+
 # ============ 模板定义 ============
 MEAL_ENTRY_TEMPLATE = "- {name}: {calories} kcal, {protein}g蛋白"
 WORKOUT_ENTRY_TEMPLATE = "- {type}: {duration}分钟, {calories} kcal"
@@ -686,21 +722,104 @@ class MemoryManager:
         with open(PREFERENCES_PATH, "w", encoding="utf-8") as f:
             f.write(self._preferences_to_markdown(prefs))
 
-    def extract_and_save_preferences(self, user_message: str) -> dict:
-        """从用户消息中提取偏好并保存"""
-        prompt = EXTRACT_PREFERENCES_PROMPT.format(user_message=user_message)
-        response = self.llm.invoke([{"role": "user", "content": prompt}])
+    # ============ 偏好批量整合 ============
 
-        data = self._extract_json_from_response(response.content)
-        if not data:
-            return {"updated": False}
+    def _ensure_pending_preferences_file(self) -> None:
+        """确保待整合文件存在"""
+        Path(PENDING_PREFERENCES_FILE).parent.mkdir(parents=True, exist_ok=True)
+        if not os.path.exists(PENDING_PREFERENCES_FILE):
+            with open(PENDING_PREFERENCES_FILE, "w", encoding="utf-8") as f:
+                json.dump({"pending_messages": [], "last_consolidation_count": 0}, f)
 
-        # 合并到现有偏好
-        current = self.load_preferences() 
+    def add_pending_preference(self, user_message: str) -> None:
+        """添加用户消息到待整合缓冲区"""
+        self._ensure_pending_preferences_file()
+
+        with open(PENDING_PREFERENCES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        data["pending_messages"].append({
+            "timestamp": datetime.now().isoformat(),
+            "content": user_message
+        })
+
+        with open(PENDING_PREFERENCES_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def should_consolidate_preferences(self) -> bool:
+        """检查是否应该触发偏好整合（达到阈值）"""
+        self._ensure_pending_preferences_file()
+
+        with open(PENDING_PREFERENCES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        pending_count = len(data["pending_messages"])
+        return pending_count >= CONSOLIDATION_THRESHOLD
+
+    def consolidate_preferences(self, force: bool = False) -> dict | None:
+        """批量整合待处理的偏好消息（只调用一次 LLM）"""
+        self._ensure_pending_preferences_file()
+
+        with open(PENDING_PREFERENCES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        pending_messages = data["pending_messages"]
+        if not pending_messages:
+            return None
+
+        # 检查是否达到阈值（除非强制整合）
+        if not force and len(pending_messages) < CONSOLIDATION_THRESHOLD:
+            return None
+
+        # 构建消息文本
+        messages_text = "\n".join([
+            f"[{i+1}] {msg['timestamp']}: {msg['content']}"
+            for i, msg in enumerate(pending_messages)
+        ])
+
+        # 获取当前偏好作为上下文
+        current_prefs = self.load_preferences()
+        current_prefs_text = json.dumps(current_prefs, ensure_ascii=False, indent=2)
+
+        # 调用一次 LLM 整合所有消息
+        prompt = CONSOLIDATE_PREFERENCES_PROMPT.format(
+            current_preferences=current_prefs_text,
+            messages=messages_text
+        )
+
+        try:
+            response = self.llm.invoke([{"role": "user", "content": prompt}])
+            consolidated = self._extract_json_from_response(response.content)
+
+            if not consolidated:
+                return {"success": False, "reason": "LLM 返回格式错误"}
+
+            # 合并到现有偏好
+            self._merge_preferences(consolidated)
+
+            # 清空 pending buffer，更新计数
+            data["pending_messages"] = []
+            data["last_consolidation_count"] = self.get_message_count()
+
+            with open(PENDING_PREFERENCES_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+            return {
+                "success": True,
+                "consolidated_count": len(pending_messages),
+                "preferences": consolidated
+            }
+
+        except Exception as e:
+            return {"success": False, "reason": str(e)}
+
+    def _merge_preferences(self, new_prefs: dict) -> None:
+        """将新的偏好合并到现有偏好（去重追加）"""
+        current = self.load_preferences()
 
         # 食物偏好
         for key in ["liked", "disliked", "allergies"]:
-            new_items = data.get("food_preferences", {}).get(key, [])
+            new_items = new_prefs.get("food_preferences", {}).get(key, [])
             existing = set(current["food_preferences"][key])
             for item in new_items:
                 if item and item not in existing:
@@ -708,34 +827,70 @@ class MemoryManager:
 
         # 运动偏好
         for key in ["liked", "disliked", "available_equipment", "limitations"]:
-            new_items = data.get("workout_preferences", {}).get(key, [])
+            new_items = new_prefs.get("workout_preferences", {}).get(key, [])
             existing = set(current["workout_preferences"][key])
             for item in new_items:
                 if item and item not in existing:
                     current["workout_preferences"][key].append(item)
 
         # 饮食限制
-        new_restrictions = data.get("dietary_restrictions", [])
+        new_restrictions = new_prefs.get("dietary_restrictions", [])
         existing_restrictions = set(current["dietary_restrictions"])
         for item in new_restrictions:
             if item and item not in existing_restrictions:
                 current["dietary_restrictions"].append(item)
 
         # 作息偏好
-        new_schedule = data.get("schedule_preferences", [])
+        new_schedule = new_prefs.get("schedule_preferences", [])
         for item in new_schedule:
             if item and item not in current["schedule_preferences"]:
                 current["schedule_preferences"].append(item)
 
         # 其他偏好
-        new_other = data.get("other", [])
+        new_other = new_prefs.get("other", [])
         for item in new_other:
             if item and item not in current["other"]:
                 current["other"].append(item)
 
         self.save_preferences(current)
 
-        return {"updated": True, "preferences": current}
+    def extract_and_save_preferences(self, user_message: str, auto_consolidate: bool = True) -> dict:
+        """从用户消息中提取偏好并保存（批量模式）
+
+        Args:
+            user_message: 用户消息
+            auto_consolidate: 是否自动触发批量整合
+        """
+        # 先把消息加入 pending buffer
+        self.add_pending_preference(user_message)
+
+        # 检查是否达到整合阈值
+        if auto_consolidate and self.should_consolidate_preferences():
+            result = self.consolidate_preferences()
+            if result and result.get("success"):
+                return {
+                    "updated": True,
+                    "consolidated": True,
+                    "count": result["consolidated_count"],
+                    "preferences": result["preferences"]
+                }
+
+        return {
+            "updated": True,
+            "consolidated": False,
+            "pending_count": len(self._get_pending_messages())
+        }
+
+    def _get_pending_messages(self) -> list:
+        """获取当前待整合的消息"""
+        self._ensure_pending_preferences_file()
+        with open(PENDING_PREFERENCES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("pending_messages", [])
+
+    def get_pending_count(self) -> int:
+        """获取当前待整合消息数"""
+        return len(self._get_pending_messages())
 
     def get_preferences_for_context(self) -> str:
         """获取偏好字符串用于上下文注入"""

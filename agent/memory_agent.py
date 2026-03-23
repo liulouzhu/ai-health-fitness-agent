@@ -1036,10 +1036,11 @@ class MemoryManager:
         if len(full_history) <= start_count:
             return None
 
-        # 构建待摘要的对话文本（最多取最近 N 条避免单次 prompt 过长）
+        # 构建待摘要的对话文本（最多取 N 条 oldest 避免跳过旧对话）
         MAX_SUMMARY_TURNS = 20
         unsummarized = full_history[start_count:]
-        turns_to_summarize = unsummarized[-MAX_SUMMARY_TURNS:] if len(unsummarized) > MAX_SUMMARY_TURNS else unsummarized
+        # 从 oldest 开始取，避免每次只摘要最新的一批而导致早期的对话被永久跳过
+        turns_to_summarize = unsummarized[:MAX_SUMMARY_TURNS] if len(unsummarized) > MAX_SUMMARY_TURNS else unsummarized
 
         conversation_text = "\n".join([
             f"用户: {turn['user']}\n助手: {turn['agent']}"

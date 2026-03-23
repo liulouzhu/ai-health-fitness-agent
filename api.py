@@ -114,37 +114,39 @@ async def test_stream():
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """流式对话接口 - 直接流式输出 LLM token"""
+    config = {"configurable": {"thread_id": "default"}}
+
+    # 获取上下文信息
+    restored_state = {}
+    try:
+        current_state = app_obj.get_state(config=config)
+        if current_state is not None:
+            state_data = getattr(current_state, 'values', None)
+            if state_data and isinstance(state_data, dict):
+                restored_state = state_data
+    except Exception:
+        restored_state = {}
+
+    messages = restored_state.get("messages", [])
+    profile_complete = restored_state.get("profile_complete", True)
+    last_intent = restored_state.get("last_intent")
+
+    # 先分类意图
+    classify_state = {
+        "input_message": request.message,
+        "messages": messages,
+        "profile_complete": profile_complete,
+        "last_intent": last_intent,
+        "image_info": {"has_image": request.image_url is not None, "image_url": request.image_url}
+    }
+    classify_state = RouterAgent().classify_intent(classify_state)
+    intent = classify_state.get("intent", "general")
+
     async def generate():
+        nonlocal messages, profile_complete, last_intent
+
         try:
-            # 直接使用 LLM 流式响应
             llm = get_llm()
-
-            # 获取上下文信息
-            config = {"configurable": {"thread_id": "default"}}
-            restored_state = {}
-            try:
-                current_state = app_obj.get_state(config=config)
-                if current_state is not None:
-                    state_data = getattr(current_state, 'values', None)
-                    if state_data and isinstance(state_data, dict):
-                        restored_state = state_data
-            except Exception:
-                restored_state = {}
-
-            messages = restored_state.get("messages", [])
-            profile_complete = restored_state.get("profile_complete", True)
-            last_intent = restored_state.get("last_intent")
-
-            # 先分类意图
-            classify_state = {
-                "input_message": request.message,
-                "messages": messages,
-                "profile_complete": profile_complete,
-                "last_intent": last_intent,
-                "image_info": {"has_image": request.image_url is not None, "image_url": request.image_url}
-            }
-            classify_state = RouterAgent().classify_intent(classify_state)
-            intent = classify_state.get("intent", "general")
 
             # 发送意图
             yield f"data: {{\"intent\": \"{intent}\"}}\n\n"
@@ -153,7 +155,7 @@ async def chat_stream(request: ChatRequest):
             if intent in ("food_report", "food"):
                 food_state = {
                     "input_message": request.message,
-                    "messages": messages,
+                    "messages": list(messages),  # 传副本避免污染原 state
                     "image_info": {"has_image": request.image_url is not None, "image_url": request.image_url},
                     "intent": intent
                 }
@@ -164,18 +166,24 @@ async def chat_stream(request: ChatRequest):
                 for char in response_text:
                     yield f"data: {char}\n\n"
                 yield f"data: [DONE]\n\n"
-                # 与 general 分支保持一致：写入历史、抽取偏好、触发摘要
+
+                # 内存历史持久化
                 memory_agent.add_conversation_turn(request.message, response_text)
                 memory_agent.extract_and_save_preferences(request.message)
                 if memory_agent.should_summarize(threshold=10):
                     memory_agent.summarize_conversations()
+
+                # 更新 LangGraph 状态
+                messages = food_state.get("messages", messages)
+                last_intent = intent
+                _update_graph_state(config, messages, last_intent, profile_complete)
                 return
 
             # 如果是运动报告或运动查询
             if intent in ("workout_report", "workout"):
                 workout_state = {
                     "input_message": request.message,
-                    "messages": messages,
+                    "messages": list(messages),  # 传副本
                     "intent": intent
                 }
                 from agent.workout_agent import WorkoutAgent
@@ -185,10 +193,16 @@ async def chat_stream(request: ChatRequest):
                 for char in response_text:
                     yield f"data: {char}\n\n"
                 yield f"data: [DONE]\n\n"
+
                 memory_agent.add_conversation_turn(request.message, response_text)
                 memory_agent.extract_and_save_preferences(request.message)
                 if memory_agent.should_summarize(threshold=10):
                     memory_agent.summarize_conversations()
+
+                # 更新 LangGraph 状态
+                messages = workout_state.get("messages", messages)
+                last_intent = intent
+                _update_graph_state(config, messages, last_intent, profile_complete)
                 return
 
             if not profile_complete:
@@ -197,6 +211,8 @@ async def chat_stream(request: ChatRequest):
                 for char in initial_response:
                     yield f"data: {char}\n\n"
                 yield f"data: [DONE]\n\n"
+                last_intent = intent
+                _update_graph_state(config, messages, last_intent, profile_complete)
                 return
 
             # 构建对话历史字符串
@@ -241,11 +257,19 @@ async def chat_stream(request: ChatRequest):
 
             yield f"data: [DONE]\n\n"
 
-            # 保存对话历史
+            # 保存对话历史到 memory
             memory_agent.add_conversation_turn(request.message, full_response)
             memory_agent.extract_and_save_preferences(request.message)
             if memory_agent.should_summarize(threshold=10):
                 memory_agent.summarize_conversations()
+
+            # 更新 LangGraph 状态
+            messages = messages + [
+                {"role": "user", "content": request.message},
+                {"role": "assistant", "content": full_response}
+            ]
+            last_intent = intent
+            _update_graph_state(config, messages, last_intent, profile_complete)
 
         except Exception as e:
             import traceback
@@ -255,6 +279,21 @@ async def chat_stream(request: ChatRequest):
             yield f"data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+def _update_graph_state(config: dict, messages: list, last_intent: str, profile_complete: bool):
+    """将更新后的状态写回 LangGraph checkpointer（同步调用）"""
+    try:
+        app_obj.update_state(
+            config,
+            {
+                "messages": messages,
+                "last_intent": last_intent,
+                "profile_complete": profile_complete,
+            }
+        )
+    except Exception as e:
+        print(f"[Warning] Failed to update graph state: {e}")
 
 
 @app.post("/chat")

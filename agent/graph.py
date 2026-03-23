@@ -211,15 +211,16 @@ def multi_intent_node(state: AgentState) -> AgentState:
         router_agent = RouterAgent()
         food_agent = FoodAgent()
 
-        if "food_report" in intents:
-            state["intent"] = "food_report"
+        # 创建独立的 state 副本，避免并发修改同一个 dict
+        food_state = dict(state)
+        stats_state = dict(state)
 
-        # 两个 agent 都直接修改 state（同一个 dict），存在竞态。
-        # food_agent.run(state) 返回修改后的 state（含 pending_stats），
-        # router_agent 修改 state 后也返回它；以 food 的 pending 为准。
+        if "food_report" in intents:
+            food_state["intent"] = "food_report"
+
         with ThreadPoolExecutor(max_workers=2) as executor:
-            food_future = executor.submit(food_agent.run, state)
-            stats_future = executor.submit(router_agent.handle_stats_query, state)
+            food_future = executor.submit(food_agent.run, food_state)
+            stats_future = executor.submit(router_agent.handle_stats_query, stats_state)
 
             food_result_state = food_future.result()
             stats_result_state = stats_future.result()
@@ -233,6 +234,8 @@ def multi_intent_node(state: AgentState) -> AgentState:
         # food_agent 的 pending_stats 在其返回值里，router_agent 不产生 pending
         state["pending_stats"] = food_result_state.get("pending_stats")
         state["response"] = "\n\n".join(responses) if responses else "已处理您的请求。"
+        # 合并 messages（food_agent 会追加新的 user/assistant 消息）
+        state["messages"] = food_result_state.get("messages", state.get("messages", []))
 
     elif has_workout and has_stats:
         # workout 和 stats_query 并发
@@ -241,14 +244,16 @@ def multi_intent_node(state: AgentState) -> AgentState:
         router_agent = RouterAgent()
         workout_agent = WorkoutAgent()
 
-        if "workout_report" in intents:
-            state["intent"] = "workout_report"
+        # 创建独立的 state 副本，避免并发修改同一个 dict
+        workout_state = dict(state)
+        stats_state = dict(state)
 
-        # 两个 agent 都直接修改 state（同一个 dict），存在竞态；
-        # 以 workout 的 pending 为准。
+        if "workout_report" in intents:
+            workout_state["intent"] = "workout_report"
+
         with ThreadPoolExecutor(max_workers=2) as executor:
-            workout_future = executor.submit(workout_agent.run, state)
-            stats_future = executor.submit(router_agent.handle_stats_query, state)
+            workout_future = executor.submit(workout_agent.run, workout_state)
+            stats_future = executor.submit(router_agent.handle_stats_query, stats_state)
 
             workout_result_state = workout_future.result()
             stats_result_state = stats_future.result()
@@ -261,6 +266,8 @@ def multi_intent_node(state: AgentState) -> AgentState:
 
         state["pending_stats"] = workout_result_state.get("pending_stats")
         state["response"] = "\n\n".join(responses) if responses else "已处理您的请求。"
+        # 合并 messages（workout_agent 会追加新的 user/assistant 消息）
+        state["messages"] = workout_result_state.get("messages", state.get("messages", []))
 
     elif has_food:
         print(f"[multi_intent_node] 仅执行 food_node")

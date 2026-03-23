@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
 
-from agent.graph import create_workflow
+from agent.graph import create_workflow, default_checkpointer
 from agent.memory_agent import get_memory_agent
 from agent.router_agent import RouterAgent
 from agent.llm import get_llm
@@ -29,7 +29,7 @@ app.add_middleware(
 )
 
 # 全局 app（暂时禁用 checkpointer 以排查流式输出问题）
-app_obj = create_workflow()
+app_obj = create_workflow(checkpointer=default_checkpointer)
 memory_agent = get_memory_agent()
 
 

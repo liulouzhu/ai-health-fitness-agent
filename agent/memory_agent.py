@@ -1055,8 +1055,9 @@ class MemoryManager:
         if not data:
             return None
 
-        # 追加到长期记忆文件
-        self._append_to_longterm_memory(data, self.get_message_count())
+        # 追加到长期记忆文件（用实际摘要的消息数，而非全局 message_count）
+        summarized_count = start_count + len(turns_to_summarize)
+        self._append_to_longterm_memory(data, summarized_count)
 
         return {
             "summary": data.get("summary", ""),
@@ -1140,6 +1141,13 @@ class MemoryManager:
         if keep_recent == 0:
             data["conversations"] = []
             data["message_count"] = 0
+            # 同时重置长期记忆摘要计数器，避免历史摘要 offset 漂移
+            if os.path.exists(LONGTERM_MEMORY_PATH):
+                with open(LONGTERM_MEMORY_PATH, "r", encoding="utf-8") as f:
+                    content = f.read()
+                content = re.sub(r'last_summary_count:\d+', 'last_summary_count:0', content)
+                with open(LONGTERM_MEMORY_PATH, "w", encoding="utf-8") as f:
+                    f.write(content)
         elif len(data["conversations"]) > keep_recent:
             data["conversations"] = data["conversations"][-keep_recent:]
             data["message_count"] = len(data["conversations"])

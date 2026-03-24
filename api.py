@@ -1,8 +1,13 @@
 import sys
 sys.path.insert(0, ".")
 
-from fastapi import FastAPI, HTTPException
+import uuid
+import base64
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
@@ -31,6 +36,18 @@ app.add_middleware(
 # 全局 app（暂时禁用 checkpointer 以排查流式输出问题）
 app_obj = create_workflow(checkpointer=default_checkpointer)
 memory_agent = get_memory_agent()
+
+# 上传目录
+UPLOAD_DIR = Path("uploads/images")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# 挂载上传目录为静态文件
+app.mount("/uploads/images", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+# 允许的图片格式
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 
 # ============ 请求/响应模型 ============
@@ -572,6 +589,70 @@ async def clear_conversation_history():
     """清除对话历史"""
     memory_agent.clear_old_conversation_history(keep_recent=0)
     return {"message": "对话历史已清除"}
+
+
+# ============ 图片上传接口 ============
+
+class UploadResponse(BaseModel):
+    success: bool
+    filename: str
+    image_url: str
+    data_url: str
+    content_type: str
+    size: int
+
+
+@app.post("/upload-image", response_model=UploadResponse)
+async def upload_image(file: UploadFile = File(...)):
+    """上传本地图片，返回可用于聊天接口的 image_url"""
+    # 1. 校验扩展名
+    ext = Path(file.filename).suffix.lower() if file.filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的图片格式。支持的格式: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+
+    # 2. 校验 MIME type
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的 MIME 类型。支持的类型: {', '.join(ALLOWED_MIME_TYPES)}"
+        )
+
+    # 3. 读取并校验文件大小
+    contents = await file.read()
+    size = len(contents)
+    if size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件大小超过限制 ({MAX_FILE_SIZE // (1024*1024)}MB)"
+        )
+    if size == 0:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    # 4. 生成唯一文件名
+    unique_name = f"{uuid.uuid4().hex}{ext}"
+    file_path = UPLOAD_DIR / unique_name
+
+    # 5. 保存文件
+    with open(file_path, "wb") as f:
+        f.write(contents)
+
+    # 6. 构建 image_url（相对路径，供聊天接口使用）
+    image_url = f"/uploads/images/{unique_name}"
+
+    # 7. 构建 data_url（base64，供多模态模型直接使用）
+    data_url = f"data:{file.content_type};base64,{base64.b64encode(contents).decode('utf-8')}"
+
+    return UploadResponse(
+        success=True,
+        filename=unique_name,
+        image_url=image_url,
+        data_url=data_url,
+        content_type=file.content_type,
+        size=size
+    )
 
 
 # ============ 健康检查 ============

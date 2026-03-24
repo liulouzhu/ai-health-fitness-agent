@@ -141,6 +141,7 @@ async def chat_stream(request: ChatRequest):
     }
     classify_state = RouterAgent().classify_intent(classify_state)
     intent = classify_state.get("intent", "general")
+    intents = classify_state.get("intents", [intent])
 
     async def generate():
         nonlocal messages, profile_complete, last_intent
@@ -150,6 +151,133 @@ async def chat_stream(request: ChatRequest):
 
             # 发送意图
             yield f"data: {{\"intent\": \"{intent}\"}}\n\n"
+
+            # 多意图处理：food + workout / food + stats / workout + stats
+            if len(intents) > 1:
+                has_food = "food" in intents or "food_report" in intents
+                has_workout = "workout" in intents or "workout_report" in intents
+                has_stats = "stats_query" in intents
+
+                if has_food and has_workout:
+                    # 并发执行 food + workout
+                    from agent.food_agent import FoodAgent
+                    from agent.workout_agent import WorkoutAgent
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    food_state = {
+                        "input_message": request.message,
+                        "messages": list(messages),
+                        "image_info": {"has_image": request.image_url is not None, "image_url": request.image_url},
+                        "intent": "food_report" if "food_report" in intents else ("food" if "food" in intents else intent)
+                    }
+                    workout_state = {
+                        "input_message": request.message,
+                        "messages": list(messages),
+                        "intent": "workout_report" if "workout_report" in intents else ("workout" if "workout" in intents else intent)
+                    }
+
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        food_future = executor.submit(FoodAgent().run, food_state)
+                        workout_future = executor.submit(WorkoutAgent().run, workout_state)
+                        food_result = food_future.result()
+                        workout_result = workout_future.result()
+
+                    responses = []
+                    if food_result.get("response"):
+                        responses.append(food_result["response"])
+                    if workout_result.get("response"):
+                        responses.append(workout_result["response"])
+
+                    combined_response = "\n\n".join(responses)
+                    for char in combined_response:
+                        yield f"data: {char}\n\n"
+                    yield f"data: [DONE]\n\n"
+
+                    memory_agent.add_conversation_turn(request.message, combined_response)
+                    memory_agent.extract_and_save_preferences(request.message)
+                    if memory_agent.should_summarize(threshold=10):
+                        memory_agent.summarize_conversations()
+
+                    # 合并 messages
+                    messages = food_result.get("messages", messages)
+                    last_intent = intent
+                    _update_graph_state(config, messages, last_intent, profile_complete)
+                    return
+
+                elif has_food and has_stats:
+                    from agent.food_agent import FoodAgent
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    food_state = {
+                        "input_message": request.message,
+                        "messages": list(messages),
+                        "image_info": {"has_image": request.image_url is not None, "image_url": request.image_url},
+                        "intent": "food_report" if "food_report" in intents else intent
+                    }
+
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        food_future = executor.submit(FoodAgent().run, food_state)
+                        stats_future = executor.submit(RouterAgent().handle_stats_query, {"input_message": request.message, "messages": list(messages)})
+                        food_result = food_future.result()
+                        stats_result = stats_future.result()
+
+                    responses = []
+                    if food_result.get("response"):
+                        responses.append(food_result["response"])
+                    if stats_result.get("response"):
+                        responses.append(stats_result["response"])
+
+                    combined_response = "\n\n".join(responses)
+                    for char in combined_response:
+                        yield f"data: {char}\n\n"
+                    yield f"data: [DONE]\n\n"
+
+                    memory_agent.add_conversation_turn(request.message, combined_response)
+                    memory_agent.extract_and_save_preferences(request.message)
+                    if memory_agent.should_summarize(threshold=10):
+                        memory_agent.summarize_conversations()
+
+                    messages = food_result.get("messages", messages)
+                    last_intent = intent
+                    _update_graph_state(config, messages, last_intent, profile_complete)
+                    return
+
+                elif has_workout and has_stats:
+                    from agent.workout_agent import WorkoutAgent
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    workout_state = {
+                        "input_message": request.message,
+                        "messages": list(messages),
+                        "intent": "workout_report" if "workout_report" in intents else intent
+                    }
+
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        workout_future = executor.submit(WorkoutAgent().run, workout_state)
+                        stats_future = executor.submit(RouterAgent().handle_stats_query, {"input_message": request.message, "messages": list(messages)})
+                        workout_result = workout_future.result()
+                        stats_result = stats_future.result()
+
+                    responses = []
+                    if workout_result.get("response"):
+                        responses.append(workout_result["response"])
+                    if stats_result.get("response"):
+                        responses.append(stats_result["response"])
+
+                    combined_response = "\n\n".join(responses)
+                    for char in combined_response:
+                        yield f"data: {char}\n\n"
+                    yield f"data: [DONE]\n\n"
+
+                    memory_agent.add_conversation_turn(request.message, combined_response)
+                    memory_agent.extract_and_save_preferences(request.message)
+                    if memory_agent.should_summarize(threshold=10):
+                        memory_agent.summarize_conversations()
+
+                    messages = workout_result.get("messages", messages)
+                    last_intent = intent
+                    _update_graph_state(config, messages, last_intent, profile_complete)
+                    return
 
             # 如果是食物报告或食物查询，走完整的 food_agent 流程
             if intent in ("food_report", "food"):

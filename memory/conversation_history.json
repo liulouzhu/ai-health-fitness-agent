@@ -1,4 +1,10 @@
 {
-  "conversations": [],
-  "message_count": 0
+  "conversations": [
+    {
+      "timestamp": "2026-03-24T16:11:56.765234",
+      "user": "我吃了一个鸡蛋，跑了5公里",
+      "agent": "食物名称：鸡蛋 (1 个，约 50g)\n热量：72 kcal\n蛋白质：6.3 g\n脂肪：4.8 g\n碳水化合物：0.4 g\n\n---\n已记录。\n\n今日统计（2026-03-24）：\n\n**摄入**\n- 热量：72 / 2041 kcal\n- 蛋白质：6 / 100 g\n\n**消耗**\n- 运动消耗：0 kcal\n- 热量缺口：72 kcal\n\n**剩余**\n- 剩余热量额度：1969 kcal\n- 剩余蛋白质：94 g"
+    }
+  ],
+  "message_count": 1
 }

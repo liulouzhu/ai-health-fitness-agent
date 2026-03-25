@@ -1,0 +1,8 @@
+.env
+.claude/settings.local.json
+.vscode/settings.json
+__pycache__/config.cpython-310.pyc
+__pycache__/
+*.py[cod]
+.claude/
+.vscode/

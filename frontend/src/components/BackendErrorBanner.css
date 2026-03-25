@@ -1,0 +1,41 @@
+.backend-error-banner {
+  background: linear-gradient(135deg, #FFF8F0 0%, #FEF3E2 100%);
+  border-bottom: 1px solid #F0D9B5;
+  padding: var(--space-3) var(--space-6);
+  flex-shrink: 0;
+}
+
+.backend-error-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.backend-error-inner svg {
+  width: 18px;
+  height: 18px;
+  color: var(--color-warning);
+  flex-shrink: 0;
+}
+
+.backend-error-text {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: #8A6520;
+}
+
+.backend-error-text strong {
+  font-weight: 600;
+}
+
+.backend-error-text code {
+  background: rgba(0,0,0,0.06);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}

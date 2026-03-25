@@ -14,7 +14,13 @@ class AgentConfig:
 
     # 对话历史配置
     MAX_HISTORY_LENGTH = 20       # 最多保存的对话历史条数
-    MAX_HISTORY_DISPLAY = 10      # 显示给 LLM 的最近历史条数
+    MAX_HISTORY_DISPLAY = 10      # 显示给 LLM 的最近历史条数（兼容旧代码）
+
+    # 统一上下文窗口限制
+    MAX_RECENT_MESSAGES = 10      # state["messages"] 运行时滑动窗口上限
+    MAX_GENERAL_HISTORY_MESSAGES = 5  # general intent 注入的最近对话轮数
+    MAX_LONGTERM_MEMORY_ITEMS = 3  # 长期记忆摘要注入条数上限
+    MAX_CONTEXT_CHARS_PER_SECTION = 2000  # 每段上下文最大字符数（防 LLM 输入溢出）
 
     # 检索配置
     RETRIEVAL_CONTENT_TRUNCATE = 2000  # 检索内容截断长度
@@ -28,3 +34,18 @@ class AgentConfig:
     BM25_TOP_K = 20             # BM25 检索返回数量
     FUSION_TOP_K = 5            # 融合后返回数量
     USE_QUERY_REWRITE = True    # 是否启用 Query 改写
+
+    # ============ Token 预算配置 ============
+    # 总 token 预算（留一部分给输出），建议不超过模型 context 的 80%
+    MAX_TOTAL_CONTEXT_TOKENS = 6000
+    # 各分 section 预算（分配给不同上下文层）
+    MAX_SYSTEM_CONTEXT_TOKENS = 500      # system prompt 本身的大小
+    MAX_EXTRA_CONTEXT_TOKENS = 300       # _build_extra_context 注入的额外上下文
+    MAX_CONVERSATION_WINDOW_TOKENS = 1500  # 对话历史窗口
+    MAX_USER_MEMORY_TOKENS = 500         # profile + preferences 文本化后的上限
+    MAX_TASK_CONTEXT_TOKENS = 400         # intent-specific 业务上下文
+    MAX_RETRIEVED_KNOWLEDGE_TOKENS = 2000  # 检索内容上限
+    # 字符 → token 估算比率（中英文混合文本的近似值）
+    CHARS_PER_TOKEN_ESTIMATE = 3.5
+    # Token 估算器模式："tiktoken"=真实 tokenizer，"chars"=字符数/CHARS_PER_TOKEN_ESTIMATE
+    TOKEN_ESTIMATOR_MODE = "auto"   # "auto"=优先 tiktoken，失败则 fallback

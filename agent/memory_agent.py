@@ -18,7 +18,7 @@ PENDING_STATS_FILE = "memory/pending_stats.json"
 
 # ============ 偏好批量整合配置 ============
 PENDING_PREFERENCES_FILE = "memory/pending_preferences.json"
-CONSOLIDATION_THRESHOLD = 10  # 每 N 条消息触发一次整合
+CONSOLIDATION_THRESHOLD = 5  # 每 N 条消息触发一次整合
 
 # ============ 整合用的 Prompt ============
 CONSOLIDATE_PREFERENCES_PROMPT = """你是一个偏好整合专家。请从以下多条用户消息中整合出完整的用户偏好。

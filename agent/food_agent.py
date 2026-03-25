@@ -1,23 +1,10 @@
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel
 from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
-
-FOOD_AGENT_PROMPT = """你是一个食物营养分析专家。请分析用户询问的食物并提供营养信息。
-
-用户偏好（请在推荐和分析时注意）：
-{preferences}
-
-分析内容：
-- 食物名称
-- 热量 (kcal)
-- 蛋白质 (g)
-- 脂肪 (g)
-- 碳水化合物 (g)
-
-直接回复分析结果，不需要额外解释。"""
+from agent.context_manager import get_context_manager
 
 
 class NutritionInfo(BaseModel):
@@ -62,10 +49,7 @@ class FoodAgent:
 
             print(f"[FoodAgent] _extract_nutrition - response.content: {response.content}")
 
-            # 尝试解析JSON
-            import json
-            import re
-            # 提取JSON
+            import json, re
             json_match = re.search(r'\{[^}]+\}', response.content)
             if json_match:
                 data = json.loads(json_match.group())
@@ -94,20 +78,33 @@ class FoodAgent:
         print(f"[FoodAgent] run - is_user_reporting={is_user_reporting}, intent={state.get('intent')}")
         try:
             image_info = state.get("image_info", {})
+            ctx_mgr = get_context_manager()
 
-            # 获取用户偏好
-            preferences = self.memory_agent.get_preferences_for_context()
+            # 通过公开 API 获取偏好
+            preferences = ctx_mgr.get_preferences_str()
             if not preferences:
                 preferences = "（暂无偏好记录）"
 
-            # 注入偏好的 prompt
-            prompt_with_prefs = FOOD_AGENT_PROMPT.format(preferences=preferences)
+            # 通过统一上下文接口获取 task_context 格式化文本
+            task_text = ctx_mgr.format_task_context("food")
 
             if image_info.get("has_image", False):
-                # 带图片的输入
+                # 带图片的多模态输入：system prompt 直接注入偏好和 task_context
+                system_parts = [
+                    "你是一个食物营养分析专家。请分析用户询问的食物并提供营养信息。\n",
+                    f"用户偏好：{preferences}",
+                ]
+                if task_text:
+                    system_parts.append(f"今日情况：{task_text}")
+                system_parts.append(
+                    "\n分析内容：食物名称、热量(kcal)、蛋白质(g)、脂肪(g)、碳水化合物(g)。"
+                    "\n直接回复分析结果，不需要额外解释。"
+                )
+                system_prompt = "\n".join(system_parts)
+
                 image_url = image_info.get("image_url", "")
                 messages = [
-                    {"role": "system", "content": prompt_with_prefs},
+                    {"role": "system", "content": system_prompt},
                     HumanMessage(
                         content=[
                             {"type": "text", "text": "请分析这张图片中的食物营养成分。"},
@@ -116,11 +113,16 @@ class FoodAgent:
                     )
                 ]
             else:
-                # 纯文字输入
-                messages = [
-                    {"role": "system", "content": prompt_with_prefs},
-                    {"role": "user", "content": f"请分析以下食物的营养成分：{state['input_message']}"}
-                ]
+                # 纯文字：使用 ContextManager 统一构建（含 token 预算管理）
+                extra_sections = {
+                    "用户偏好": preferences,
+                    "今日情况": task_text,
+                }
+                messages = ctx_mgr.build_prompt_messages(
+                    "food",
+                    state,
+                    extra_sections=extra_sections,
+                )
 
             response = self.llm.invoke(messages)
             print(f"[FoodAgent] LLM响应长度: {len(response.content) if response.content else 0}")
@@ -140,18 +142,15 @@ class FoodAgent:
 
             # 判断是否是用户主动报告（直接记录）还是询问（需要确认）
             if is_user_reporting:
-                # 直接保存并返回今日情况
                 print(f"[FoodAgent] 开始保存营养数据: {entry}")
                 self.memory_agent.update_daily_stats("meal", entry)
                 print(f"[FoodAgent] 保存完成，获取每日摘要...")
                 summary = self.memory_agent.get_daily_summary()
                 print(f"[FoodAgent] 摘要长度: {len(summary) if summary else 0}")
-                # 先输出食物营养成分，再输出今日统计
                 state["response"] = f"{response.content}\n\n---\n已记录。\n\n{summary}"
                 state["pending_stats"] = None
                 self.memory_agent.clear_pending_stats()
             else:
-                # 询问是否保存
                 state["pending_stats"] = {
                     "type": "meal",
                     "data": entry,
@@ -168,9 +167,6 @@ class FoodAgent:
             state["food_result"] = None
             state["pending_stats"] = None
 
-        # 更新对话历史，使后续追问能继承上下文
-        state["messages"] = state.get("messages", []) + [
-            {"role": "user", "content": state["input_message"]},
-            {"role": "assistant", "content": state.get("response", "")}
-        ]
+        # 更新对话历史（使用 ContextManager 统一管理滑动窗口）
+        ctx_mgr.append_messages(state, state["input_message"], state.get("response", ""))
         return state

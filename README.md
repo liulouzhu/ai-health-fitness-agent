@@ -145,6 +145,24 @@ ai_health_fitness_agent/
 - 对话历史存储
 - 长期记忆摘要
 
+### 上下文层
+`ContextManager` 负责：
+- 分层上下文装配（system_context / conversation_window / user_memory / task_context / retrieved_knowledge）
+- 按 intent 策略选择性注入上下文（不同意图加载不同上下文，避免一股脑塞入）
+- 运行时滑动窗口管理（state["messages"]，上限由 `MAX_RECENT_MESSAGES` 控制）
+- 统一偏好格式化
+
+**Token 预算机制：**
+- `TokenEstimator` 优先使用 `tiktoken`（cl100k_base）真实编码器，失败时自动降级为字符数/3.5 近似估算
+- 各 section 独立 token 预算（`MAX_EXTRA_CONTEXT_TOKENS` / `MAX_CONVERSATION_WINDOW_TOKENS` 等），超预算时独立裁剪而非整体截断
+- `build_prompt_messages()` 最终输出前输出 debug 日志，格式：`intent=xxx | system=NNN | extra=NNN | conv=NNN | total≈NNN tokens`
+- `extra_sections` 参数允许各 agent 注入动态内容（偏好/检索结果等），统一经由 token 预算裁剪
+
+**数据职责边界：**
+- `state["messages"]` = LangGraph 运行时滑动窗口（仅保留最近 MAX_RECENT_MESSAGES 条）
+- `memory/conversation_history.json` = 完整持久化历史（由 `memory_agent` 在会话结束时写入）
+- `memory/longterm_memory.md` = 摘要型长期记忆（不作为原始历史替代品）
+
 ### 检索层
 - `recipe_agent.py` 使用本地食谱知识库检索
 - `workout_agent.py` 使用训练知识库检索

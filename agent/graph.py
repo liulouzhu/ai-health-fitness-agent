@@ -285,9 +285,7 @@ def multi_intent_node(state: AgentState) -> AgentState:
         print(f"[multi_intent_node] 仅执行 stats_query")
         router_agent = RouterAgent()
         router_agent.handle_stats_query(state)
-        if state.get("response"):
-            state["response"] = state["response"]
-        else:
+        if not state.get("response"):
             state["response"] = "已处理您的请求。"
 
     else:

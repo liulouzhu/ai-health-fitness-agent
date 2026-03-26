@@ -6,25 +6,6 @@ from config import AgentConfig
 
 INTENT_TYPES = ["food", "workout", "recipe", "stats_query", "profile_update", "confirm", "general", "food_report", "workout_report"]
 
-SYSTEM_PROMPT = """你是一个智能路由器，负责判断用户意图并路由到对应的Agent。
-
-可选意图：
-- "food": 食物、餐饮、卡路里、营养成分、图片中的食物识别
-- "workout": 锻炼、健身计划、运动建议、训练方法、热量消耗统计
-- "recipe": 食谱推荐、推荐晚餐/午餐/早餐、吃什么好、想吃点啥
-- "stats_query": 查询今日热量消耗、今日吃了多少、还剩多少热量、今天统计
-- "profile_update": 用户主动更新档案信息（如"我体重变成XX了"、"我长高了"等）
-- "confirm": 用户回复"是/否"用于确认之前的操作
-- "general": 其他一般性对话、问候、无法分类的问题
-
-重要：一个用户输入可能包含多个意图！
-- "我吃了XXX顺便跑了步" 同时包含 food 和 workout
-- "我今天想吃点健康的然后健身" 同时包含 recipe 和 workout
-- "我跑步了，吃了碗米饭" 同时包含 workout 和 food
-
-对于复合输入，识别所有相关意图，以逗号分隔返回，如：food,workout
-只返回意图标签，不要任何解释。如果只有一个意图也返回单个即可。"""
-
 
 class RouterAgent:
     def __init__(self):
@@ -47,8 +28,7 @@ class RouterAgent:
         """意图分类node"""
         print(f"[Router] classify_intent - 开始意图分类")
         try:
-            user_input = state.get("input_message", "")
-            print(f"[Router] classify_intent - 用户输入: {user_input[:50]}...")
+            print(f"[Router] classify_intent - 用户输入: {state.get('input_message', '')[:50]}...")
 
             # 如果档案不完整，先处理档案创建/更新
             if not state.get("profile_complete", True):
@@ -98,8 +78,7 @@ class RouterAgent:
                 valid_intents = ["general"]
 
             # 判断是否是用户主动报告吃食物或做运动
-            user_input_original = state.get("input_message", "")
-            is_reporting = self._is_user_reporting_food_or_workout(user_input_original)
+            is_reporting = self._is_user_reporting_food_or_workout(user_input)
 
             # 如果是主动报告且意图是 food/workout，修改意图类型
             if is_reporting:

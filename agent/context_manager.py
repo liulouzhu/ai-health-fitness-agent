@@ -482,17 +482,10 @@ class ContextManager:
         elif intent in ("food", "food_report"):
             stats = task_context.get("daily_stats", {})
             if stats:
-                parts.append(
-                    f"今日已摄入：{int(stats.get('consumed_calories', 0))} kcal，"
-                    f"{stats.get('consumed_protein', 0):.0f}g 蛋白"
-                )
+                parts.append(self._fmt_daily_intake(stats))
 
         elif intent in ("workout", "workout_report"):
-            workout_prefs = task_context.get("workout_preferences", {})
-            if workout_prefs.get("limitations"):
-                parts.append(f"运动限制：{', '.join(workout_prefs['limitations'])}")
-            if workout_prefs.get("disliked"):
-                parts.append(f"不喜欢运动：{', '.join(workout_prefs['disliked'])}")
+            parts.extend(self._fmt_workout_prefs(task_context.get("workout_preferences", {})))
 
         elif intent == "confirm":
             pending = task_context.get("pending_stats")
@@ -508,17 +501,10 @@ class ContextManager:
         if intent in ("food", "food_report"):
             stats = task_context.get("daily_stats", {})
             if stats:
-                parts.append(
-                    f"今日已摄入：{int(stats.get('consumed_calories', 0))} kcal，"
-                    f"{stats.get('consumed_protein', 0):.0f}g 蛋白"
-                )
+                parts.append(self._fmt_daily_intake(stats))
 
         elif intent in ("workout", "workout_report"):
-            workout_prefs = task_context.get("workout_preferences", {})
-            if workout_prefs.get("limitations"):
-                parts.append(f"运动限制：{', '.join(workout_prefs['limitations'])}")
-            if workout_prefs.get("disliked"):
-                parts.append(f"不喜欢运动：{', '.join(workout_prefs['disliked'])}")
+            parts.extend(self._fmt_workout_prefs(task_context.get("workout_preferences", {})))
             stats = task_context.get("daily_stats", {})
             if stats and stats.get("burned_calories"):
                 parts.append(f"今日已消耗：{int(stats.get('burned_calories', 0))} kcal")
@@ -542,25 +528,27 @@ class ContextManager:
 
         return "\n".join(parts) if parts else ""
 
+    # ---- 格式化辅助方法（消除重复） ----
+
+    def _fmt_daily_intake(self, stats: Dict) -> str:
+        """格式化"今日已摄入"片段"""
+        return (
+            f"今日已摄入：{int(stats.get('consumed_calories', 0))} kcal，"
+            f"{stats.get('consumed_protein', 0):.0f}g 蛋白"
+        )
+
+    def _fmt_workout_prefs(self, workout_prefs: Dict) -> List[str]:
+        """格式化运动偏好片段列表"""
+        parts = []
+        if workout_prefs.get("limitations"):
+            parts.append(f"运动限制：{', '.join(workout_prefs['limitations'])}")
+        if workout_prefs.get("disliked"):
+            parts.append(f"不喜欢运动：{', '.join(workout_prefs['disliked'])}")
+        return parts
+
     def _get_preferences_str(self) -> str:
-        """将 preferences 字典格式化为上下文字符串"""
-        prefs = self.memory.load_preferences()
-        context_parts = []
-
-        if prefs["food_preferences"]["disliked"]:
-            context_parts.append(f"食物禁忌: {', '.join(prefs['food_preferences']['disliked'])}")
-        if prefs["food_preferences"]["allergies"]:
-            context_parts.append(f"食物过敏: {', '.join(prefs['food_preferences']['allergies'])}")
-        if prefs["food_preferences"]["liked"]:
-            context_parts.append(f"喜欢食物: {', '.join(prefs['food_preferences']['liked'])}")
-        if prefs["workout_preferences"]["disliked"]:
-            context_parts.append(f"不喜欢运动: {', '.join(prefs['workout_preferences']['disliked'])}")
-        if prefs["workout_preferences"]["limitations"]:
-            context_parts.append(f"运动限制: {', '.join(prefs['workout_preferences']['limitations'])}")
-        if prefs["dietary_restrictions"]:
-            context_parts.append(f"饮食限制: {', '.join(prefs['dietary_restrictions'])}")
-
-        return "；".join(context_parts)
+        """将 preferences 字典格式化为上下文字符串（委托给 memory_agent）"""
+        return self.memory.get_preferences_for_context()
 
 
 # ============ 便捷函数 ============

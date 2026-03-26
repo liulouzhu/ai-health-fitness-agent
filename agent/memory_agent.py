@@ -910,10 +910,6 @@ class MemoryManager:
             data = json.load(f)
         return data.get("pending_messages", [])
 
-    def get_pending_count(self) -> int:
-        """获取当前待整合消息数"""
-        return len(self._get_pending_messages())
-
     def get_preferences_for_context(self) -> str:
         """获取偏好字符串用于上下文注入"""
         prefs = self.load_preferences()

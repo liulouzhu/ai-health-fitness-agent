@@ -160,8 +160,10 @@ ai_health_fitness_agent/
 
 **数据职责边界：**
 - `state["messages"]` = LangGraph 运行时滑动窗口（仅保留最近 MAX_RECENT_MESSAGES 条）
-- `memory/conversation_history.json` = 完整持久化历史（由 `memory_agent` 在会话结束时写入）
-- `memory/longterm_memory.md` = 摘要型长期记忆（不作为原始历史替代品）
+- `state["summary_buffer"]` = 未摘要的对话轮次（累积到阈值后写入长期记忆）
+- `state["turn_count"]` = 当前会话总轮次
+- `state["last_summary_turn"]` = 上次写入长期记忆时的 turn_count
+- `memory/longterm_memory.md` = 摘要型长期记忆（由 state 摘要缓冲驱动，不再依赖 JSON 文件）
 
 ### 检索层
 - `recipe_agent.py` 使用本地食谱知识库检索

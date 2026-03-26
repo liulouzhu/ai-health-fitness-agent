@@ -52,7 +52,12 @@ class AgentState(TypedDict):
     daily_stats: DailyStats     # 今日统计(每日记忆)
 
     # --- 对话历史 ---
-    messages: Annotated[list, operator.add]  # 对话历史
+    messages: Annotated[list, operator.add]  # 对话历史（运行时滑动窗口）
+
+    # --- 摘要缓冲（用于长期记忆写入） ---
+    summary_buffer: List[Dict]        # 未摘要的对话轮次 [{"user": ..., "agent": ..., "timestamp": ...}]
+    turn_count: int                   # 当前会话总轮次
+    last_summary_turn: int            # 上次写入长期记忆时的 turn_count
 
     # --- 最终响应 ---
     response: Optional[str]     # 最终回复给用户的内容

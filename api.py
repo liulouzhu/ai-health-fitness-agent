@@ -163,6 +163,13 @@ async def chat_stream(request: ChatRequest):
     async def generate():
         nonlocal messages, profile_complete, last_intent
 
+        # 初始化流式状态（用于摘要缓冲）
+        stream_state = {
+            "summary_buffer": restored_state.get("summary_buffer", []),
+            "turn_count": restored_state.get("turn_count", 0),
+            "last_summary_turn": restored_state.get("last_summary_turn", 0),
+        }
+
         try:
             llm = get_llm()
 
@@ -210,15 +217,21 @@ async def chat_stream(request: ChatRequest):
                         yield f"data: {char}\n\n"
                     yield f"data: [DONE]\n\n"
 
-                    memory_agent.add_conversation_turn(request.message, combined_response)
+                    # 状态-based 摘要缓冲
+                    memory_agent.add_conversation_turn(stream_state, request.message, combined_response)
                     memory_agent.extract_and_save_preferences(request.message)
-                    if memory_agent.should_summarize(threshold=10):
-                        memory_agent.summarize_conversations()
+                    if memory_agent.should_summarize(stream_state, threshold=10):
+                        memory_agent.summarize_conversations(stream_state)
 
                     # 合并 messages
                     messages = food_result.get("messages", messages)
                     last_intent = intent
-                    _update_graph_state(config, messages, last_intent, profile_complete)
+                    _update_graph_state(
+                        config, messages, last_intent, profile_complete,
+                        summary_buffer=stream_state.get("summary_buffer", []),
+                        turn_count=stream_state.get("turn_count", 0),
+                        last_summary_turn=stream_state.get("last_summary_turn", 0),
+                    )
                     return
 
                 elif has_food and has_stats:
@@ -249,14 +262,20 @@ async def chat_stream(request: ChatRequest):
                         yield f"data: {char}\n\n"
                     yield f"data: [DONE]\n\n"
 
-                    memory_agent.add_conversation_turn(request.message, combined_response)
+                    # 状态-based 摘要缓冲
+                    memory_agent.add_conversation_turn(stream_state, request.message, combined_response)
                     memory_agent.extract_and_save_preferences(request.message)
-                    if memory_agent.should_summarize(threshold=10):
-                        memory_agent.summarize_conversations()
+                    if memory_agent.should_summarize(stream_state, threshold=10):
+                        memory_agent.summarize_conversations(stream_state)
 
                     messages = food_result.get("messages", messages)
                     last_intent = intent
-                    _update_graph_state(config, messages, last_intent, profile_complete)
+                    _update_graph_state(
+                        config, messages, last_intent, profile_complete,
+                        summary_buffer=stream_state.get("summary_buffer", []),
+                        turn_count=stream_state.get("turn_count", 0),
+                        last_summary_turn=stream_state.get("last_summary_turn", 0),
+                    )
                     return
 
                 elif has_workout and has_stats:
@@ -286,14 +305,20 @@ async def chat_stream(request: ChatRequest):
                         yield f"data: {char}\n\n"
                     yield f"data: [DONE]\n\n"
 
-                    memory_agent.add_conversation_turn(request.message, combined_response)
+                    # 状态-based 摘要缓冲
+                    memory_agent.add_conversation_turn(stream_state, request.message, combined_response)
                     memory_agent.extract_and_save_preferences(request.message)
-                    if memory_agent.should_summarize(threshold=10):
-                        memory_agent.summarize_conversations()
+                    if memory_agent.should_summarize(stream_state, threshold=10):
+                        memory_agent.summarize_conversations(stream_state)
 
                     messages = workout_result.get("messages", messages)
                     last_intent = intent
-                    _update_graph_state(config, messages, last_intent, profile_complete)
+                    _update_graph_state(
+                        config, messages, last_intent, profile_complete,
+                        summary_buffer=stream_state.get("summary_buffer", []),
+                        turn_count=stream_state.get("turn_count", 0),
+                        last_summary_turn=stream_state.get("last_summary_turn", 0),
+                    )
                     return
 
             # 如果是食物报告或食物查询，走完整的 food_agent 流程
@@ -312,16 +337,21 @@ async def chat_stream(request: ChatRequest):
                     yield f"data: {char}\n\n"
                 yield f"data: [DONE]\n\n"
 
-                # 内存历史持久化
-                memory_agent.add_conversation_turn(request.message, response_text)
+                # 状态-based 摘要缓冲
+                memory_agent.add_conversation_turn(stream_state, request.message, response_text)
                 memory_agent.extract_and_save_preferences(request.message)
-                if memory_agent.should_summarize(threshold=10):
-                    memory_agent.summarize_conversations()
+                if memory_agent.should_summarize(stream_state, threshold=10):
+                    memory_agent.summarize_conversations(stream_state)
 
                 # 更新 LangGraph 状态
                 messages = food_state.get("messages", messages)
                 last_intent = intent
-                _update_graph_state(config, messages, last_intent, profile_complete)
+                _update_graph_state(
+                    config, messages, last_intent, profile_complete,
+                    summary_buffer=stream_state.get("summary_buffer", []),
+                    turn_count=stream_state.get("turn_count", 0),
+                    last_summary_turn=stream_state.get("last_summary_turn", 0),
+                )
                 return
 
             # 如果是运动报告或运动查询
@@ -339,15 +369,21 @@ async def chat_stream(request: ChatRequest):
                     yield f"data: {char}\n\n"
                 yield f"data: [DONE]\n\n"
 
-                memory_agent.add_conversation_turn(request.message, response_text)
+                # 状态-based 摘要缓冲
+                memory_agent.add_conversation_turn(stream_state, request.message, response_text)
                 memory_agent.extract_and_save_preferences(request.message)
-                if memory_agent.should_summarize(threshold=10):
-                    memory_agent.summarize_conversations()
+                if memory_agent.should_summarize(stream_state, threshold=10):
+                    memory_agent.summarize_conversations(stream_state)
 
                 # 更新 LangGraph 状态
                 messages = workout_state.get("messages", messages)
                 last_intent = intent
-                _update_graph_state(config, messages, last_intent, profile_complete)
+                _update_graph_state(
+                    config, messages, last_intent, profile_complete,
+                    summary_buffer=stream_state.get("summary_buffer", []),
+                    turn_count=stream_state.get("turn_count", 0),
+                    last_summary_turn=stream_state.get("last_summary_turn", 0),
+                )
                 return
 
             if not profile_complete:
@@ -402,11 +438,11 @@ async def chat_stream(request: ChatRequest):
 
             yield f"data: [DONE]\n\n"
 
-            # 保存对话历史到 memory
-            memory_agent.add_conversation_turn(request.message, full_response)
+            # 状态-based 摘要缓冲
+            memory_agent.add_conversation_turn(stream_state, request.message, full_response)
             memory_agent.extract_and_save_preferences(request.message)
-            if memory_agent.should_summarize(threshold=10):
-                memory_agent.summarize_conversations()
+            if memory_agent.should_summarize(stream_state, threshold=10):
+                memory_agent.summarize_conversations(stream_state)
 
             # 更新 LangGraph 状态
             messages = messages + [
@@ -414,7 +450,12 @@ async def chat_stream(request: ChatRequest):
                 {"role": "assistant", "content": full_response}
             ]
             last_intent = intent
-            _update_graph_state(config, messages, last_intent, profile_complete)
+            _update_graph_state(
+                config, messages, last_intent, profile_complete,
+                summary_buffer=stream_state.get("summary_buffer", []),
+                turn_count=stream_state.get("turn_count", 0),
+                last_summary_turn=stream_state.get("last_summary_turn", 0),
+            )
 
         except Exception as e:
             import traceback
@@ -426,7 +467,16 @@ async def chat_stream(request: ChatRequest):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-def _update_graph_state(config: dict, messages: list, last_intent: str, profile_complete: bool, app=None):
+def _update_graph_state(
+    config: dict,
+    messages: list,
+    last_intent: str,
+    profile_complete: bool,
+    summary_buffer: list = None,
+    turn_count: int = None,
+    last_summary_turn: int = None,
+    app=None
+):
     """将更新后的状态写回 LangGraph checkpointer（同步调用）
 
     Args:
@@ -434,18 +484,25 @@ def _update_graph_state(config: dict, messages: list, last_intent: str, profile_
         messages: updated messages list
         last_intent: last intent string
         profile_complete: whether profile is complete
+        summary_buffer: optional summary buffer list
+        turn_count: optional turn count
+        last_summary_turn: optional last summary turn
         app: optional LangGraph app instance (defaults to module-level app_obj)
     """
     try:
         target_app = app if app is not None else app_obj
-        target_app.update_state(
-            config,
-            {
-                "messages": messages,
-                "last_intent": last_intent,
-                "profile_complete": profile_complete,
-            }
-        )
+        updates = {
+            "messages": messages,
+            "last_intent": last_intent,
+            "profile_complete": profile_complete,
+        }
+        if summary_buffer is not None:
+            updates["summary_buffer"] = summary_buffer
+        if turn_count is not None:
+            updates["turn_count"] = turn_count
+        if last_summary_turn is not None:
+            updates["last_summary_turn"] = last_summary_turn
+        target_app.update_state(config, updates)
     except Exception as e:
         print(f"[Warning] Failed to update graph state: {e}")
 
@@ -467,7 +524,7 @@ async def chat(request: ChatRequest):
         except Exception:
             restored_state = {}
 
-        # 构建状态
+        # 构建状态（包含新的摘要缓冲字段）
         state = {
             "input_message": request.message,
             "image_info": {
@@ -477,6 +534,9 @@ async def chat(request: ChatRequest):
             "messages": restored_state.get("messages", []),
             "last_intent": restored_state.get("last_intent"),
             "profile_complete": restored_state.get("profile_complete", True),
+            "summary_buffer": restored_state.get("summary_buffer", []),
+            "turn_count": restored_state.get("turn_count", 0),
+            "last_summary_turn": restored_state.get("last_summary_turn", 0),
         }
 
         # 使用 invoke（同步）
@@ -484,11 +544,22 @@ async def chat(request: ChatRequest):
         response_text = result.get("response", "")
         intent = result.get("intent")
 
-        # 长期记忆处理
-        memory_agent.add_conversation_turn(request.message, response_text)
+        # 长期记忆处理（基于 state 的摘要缓冲）
+        memory_agent.add_conversation_turn(result, request.message, response_text)
         memory_agent.extract_and_save_preferences(request.message)
-        if memory_agent.should_summarize(threshold=10):
-            memory_agent.summarize_conversations()
+        if memory_agent.should_summarize(result, threshold=10):
+            memory_agent.summarize_conversations(result)
+
+        # 将更新后的摘要缓冲写回 checkpointer
+        _update_graph_state(
+            config,
+            result.get("messages", []),
+            result.get("last_intent"),
+            result.get("profile_complete", True),
+            summary_buffer=result.get("summary_buffer", []),
+            turn_count=result.get("turn_count", 0),
+            last_summary_turn=result.get("last_summary_turn", 0),
+        )
 
         # 返回完整响应
         return {"response": response_text, "intent": intent}
@@ -579,15 +650,68 @@ async def get_daily_stats():
 
 @app.get("/history")
 async def get_conversation_history():
-    """获取对话历史"""
-    history = memory_agent.get_conversation_history(limit=20)
-    return {"history": history}
+    """获取对话历史（从 LangGraph state 的 messages 窗口读取，聚合为 user/agent 配对）"""
+    config = {"configurable": {"thread_id": "default"}}
+    try:
+        current_state = app_obj.get_state(config=config)
+        if current_state is not None:
+            state_data = getattr(current_state, 'values', None)
+            if state_data and isinstance(state_data, dict):
+                messages = state_data.get("messages", [])
+                # 从最老开始，每相邻 user+assistant 配成一轮
+                turns = []
+                i = 0
+                while i + 1 < len(messages):
+                    user_msg = messages[i]
+                    assistant_msg = messages[i + 1]
+                    if user_msg.get("role") == "user" and assistant_msg.get("role") == "assistant":
+                        turns.append({
+                            "timestamp": "",
+                            "user": user_msg.get("content", ""),
+                            "agent": assistant_msg.get("content", ""),
+                        })
+                        i += 2
+                    else:
+                        i += 1
+
+                # 返回最近 20 轮（按时间正序，与前端渲染顺序一致）
+                return {"history": turns[-20:]}
+    except Exception:
+        pass
+    return {"history": []}
 
 
 @app.delete("/history")
 async def clear_conversation_history():
-    """清除对话历史"""
-    memory_agent.clear_old_conversation_history(keep_recent=0)
+    """清除对话历史（清空 LangGraph state 中的短期会话字段，保留 profile_complete）"""
+    config = {"configurable": {"thread_id": "default"}}
+    try:
+        # 步骤1：优先从 checkpointer state 读取
+        current_profile_complete = None
+        try:
+            state_obj = app_obj.get_state(config=config)
+            if state_obj is not None:
+                values = getattr(state_obj, 'values', None)
+                if values and isinstance(values, dict):
+                    current_profile_complete = values.get("profile_complete")
+        except Exception:
+            pass
+
+        # 步骤2：checkpointer 无 state，从用户档案重新计算
+        if current_profile_complete is None:
+            current_profile_complete = memory_agent.is_profile_complete()
+
+        _update_graph_state(
+            config,
+            messages=[],
+            last_intent=None,
+            profile_complete=current_profile_complete,
+            summary_buffer=[],
+            turn_count=0,
+            last_summary_turn=0,
+        )
+    except Exception as e:
+        print(f"[Warning] Failed to clear history: {e}")
     return {"message": "对话历史已清除"}
 
 

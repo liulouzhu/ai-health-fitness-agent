@@ -12,7 +12,6 @@ from config import AgentConfig
 MEMORY_PATH = "memory/memory.md"
 LONGTERM_MEMORY_PATH = "memory/longterm_memory.md"
 PREFERENCES_PATH = "memory/preferences.md"
-CONVERSATION_HISTORY_FILE = "memory/conversation_history.json"
 DAILY_STATS_PATH = "memory/daily_stats"
 PENDING_STATS_FILE = "memory/pending_stats.json"
 
@@ -940,107 +939,46 @@ class MemoryManager:
 
         return "；".join(context_parts) if context_parts else ""
 
-    # ============ 对话历史管理 ============
+    # ============ State-based 摘要缓冲（替代 JSON history） ============
+    # 注意：以下方法现在基于 LangGraph state 工作，不再读写 JSON 文件
 
-    def _ensure_conversation_file(self) -> None:
-        """确保对话历史文件存在"""
-        Path(CONVERSATION_HISTORY_FILE).parent.mkdir(parents=True, exist_ok=True)
-        if not os.path.exists(CONVERSATION_HISTORY_FILE):
-            with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump({"conversations": [], "message_count": 0}, f)
+    def add_conversation_turn(self, state: dict, user_message: str, agent_response: str) -> None:
+        """向 state['summary_buffer'] 添加一轮对话，并更新 turn_count"""
+        if "summary_buffer" not in state:
+            state["summary_buffer"] = []
+        if "turn_count" not in state:
+            state["turn_count"] = 0
 
-    def add_conversation_turn(self, user_message: str, agent_response: str) -> None:
-        """添加一轮对话到历史记录"""
-        self._ensure_conversation_file()
-
-        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        data["conversations"].append({
+        state["summary_buffer"].append({
             "timestamp": datetime.now().isoformat(),
             "user": user_message,
             "agent": agent_response
         })
-        data["message_count"] += 1
+        state["turn_count"] += 1
 
-        with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    def should_summarize(self, state: dict, threshold: int = 10) -> bool:
+        """判断是否应该进行摘要（基于 state 内的 turn_count）"""
+        turn_count = state.get("turn_count", 0)
+        last_summary_turn = state.get("last_summary_turn", 0)
+        return (turn_count - last_summary_turn) >= threshold
 
-    def get_conversation_history(self, limit: int = 10) -> list:
-        """获取最近的对话历史"""
-        self._ensure_conversation_file()
-
-        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        return data["conversations"][-limit:]
-
-    def _get_full_conversation_history(self) -> list:
-        """获取完整对话历史（不受 limit 截断，用于摘要逻辑）"""
-        self._ensure_conversation_file()
-
-        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        return data["conversations"]
-
-    def get_message_count(self) -> int:
-        """获取对话消息计数"""
-        self._ensure_conversation_file()
-
-        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        return data.get("message_count", 0)
-
-    # ============ 长期记忆摘要 ============
-
-    def should_summarize(self, threshold: int = 10) -> bool:
-        """判断是否应该进行摘要（达到消息阈值）"""
-        count = self.get_message_count()
-        last_summary = self._get_last_summary_info()
-
-        # 如果上次摘要后又有 threshold 条新消息，则需要摘要
-        if last_summary:
-            messages_since_summary = count - last_summary.get("message_count", 0)
-            return messages_since_summary >= threshold
-        else:
-            # 首次摘要
-            return count >= threshold
-
-    def _get_last_summary_info(self) -> dict | None:
-        """获取上次摘要的信息"""
-        if not os.path.exists(LONGTERM_MEMORY_PATH):
-            return None
-
-        with open(LONGTERM_MEMORY_PATH, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        # 查找最新的摘要标记
-        match = re.search(r'<!-- last_summary_count:(\d+) -->', content)
-        if match:
-            return {"message_count": int(match.group(1))}
-        return None
-
-    def summarize_conversations(self, force: bool = False) -> dict | None:
-        """对对话历史进行摘要并存入长期记忆"""
+    def summarize_conversations(self, state: dict, force: bool = False, max_turns: int = 20) -> dict | None:
+        """对 state['summary_buffer'] 中的对话进行增量摘要，写入长期记忆文件"""
         threshold = 10
-        if not force and not self.should_summarize(threshold):
+        if not force and not self.should_summarize(state, threshold):
             return None
 
-        # 获取所有未摘要的对话（用完整列表以避免 offset 漂移）
-        last_summary = self._get_last_summary_info()
-        start_count = last_summary["message_count"] if last_summary else 0
+        buffer = state.get("summary_buffer", [])
+        last_summary_turn = state.get("last_summary_turn", 0)
 
-        full_history = self._get_full_conversation_history()
-        if len(full_history) <= start_count:
+        # 计算未摘要的部分（从 last_summary_turn 位置开始）
+        # 注意：turn_count 是总轮次，buffer 长度可能小于差值（因为 buffer 可能被截断过）
+        unsummarized_count = len(buffer)  # buffer 长度就是未摘要轮次（每次 add_conversation_turn 追加一条）
+        if unsummarized_count == 0:
             return None
 
-        # 构建待摘要的对话文本（最多取 N 条 oldest 避免跳过旧对话）
-        MAX_SUMMARY_TURNS = 20
-        unsummarized = full_history[start_count:]
-        # 从 oldest 开始取，避免每次只摘要最新的一批而导致早期的对话被永久跳过
-        turns_to_summarize = unsummarized[:MAX_SUMMARY_TURNS] if len(unsummarized) > MAX_SUMMARY_TURNS else unsummarized
+        # 最多摘要 max_turns 条（从 buffer 头部取 oldest）
+        turns_to_summarize = buffer[:max_turns] if len(buffer) > max_turns else buffer
 
         conversation_text = "\n".join([
             f"用户: {turn['user']}\n助手: {turn['agent']}"
@@ -1056,15 +994,33 @@ class MemoryManager:
         if not data:
             return None
 
-        # 追加到长期记忆文件（用实际摘要的消息数，而非全局 message_count）
-        summarized_count = start_count + len(turns_to_summarize)
-        self._append_to_longterm_memory(data, summarized_count)
+        # 写入长期记忆
+        summarized_turn_count = len(turns_to_summarize)
+        self._append_to_longterm_memory(data, last_summary_turn + summarized_turn_count)
+
+        # 更新 state：移除已摘要的部分，更新 last_summary_turn
+        state["summary_buffer"] = buffer[summarized_turn_count:]
+        state["last_summary_turn"] = last_summary_turn + summarized_turn_count
 
         return {
             "summary": data.get("summary", ""),
             "learned": data.get("learned_preferences", []),
             "facts": data.get("important_facts", [])
         }
+
+    def _get_last_summary_info(self) -> dict | None:
+        """获取上次摘要的信息（从 longterm_memory.md 读取）"""
+        if not os.path.exists(LONGTERM_MEMORY_PATH):
+            return None
+
+        with open(LONGTERM_MEMORY_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 查找最新的摘要标记
+        match = re.search(r'<!-- last_summary_count:(\d+) -->', content)
+        if match:
+            return {"message_count": int(match.group(1))}
+        return None
 
     def _append_to_longterm_memory(self, summary_data: dict, message_count: int) -> None:
         """追加摘要到长期记忆文件"""
@@ -1130,31 +1086,6 @@ class MemoryManager:
             context_parts.append(f"[{date}] {summary_clean}")
 
         return "；".join(context_parts)
-
-    def clear_old_conversation_history(self, keep_recent: int = 0) -> None:
-        """清除旧的对话历史，保留最近的N条"""
-        self._ensure_conversation_file()
-
-        with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        # keep_recent=0 表示全部清除（[-0:] 等于 [0:]，会保留全部，需要特殊处理）
-        if keep_recent == 0:
-            data["conversations"] = []
-            data["message_count"] = 0
-            # 同时重置长期记忆摘要计数器，避免历史摘要 offset 漂移
-            if os.path.exists(LONGTERM_MEMORY_PATH):
-                with open(LONGTERM_MEMORY_PATH, "r", encoding="utf-8") as f:
-                    content = f.read()
-                content = re.sub(r'last_summary_count:\d+', 'last_summary_count:0', content)
-                with open(LONGTERM_MEMORY_PATH, "w", encoding="utf-8") as f:
-                    f.write(content)
-        elif len(data["conversations"]) > keep_recent:
-            data["conversations"] = data["conversations"][-keep_recent:]
-            data["message_count"] = len(data["conversations"])
-
-        with open(CONVERSATION_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 # 便捷函数

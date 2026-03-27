@@ -1,11 +1,12 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.types import Send
 from agent.state import AgentState
 from agent.router_agent import RouterAgent
 from agent.food_agent import FoodAgent
 from agent.workout_agent import WorkoutAgent
 from agent.recipe_agent import RecipeAgent
-from agent.multi_agent import multi_intent_node
+from agent.multi_agent import food_workout_node, food_stats_node, workout_stats_node, multi_join_node
 from agent.memory_agent import get_memory_agent
 from datetime import datetime
 import os
@@ -77,52 +78,58 @@ INTENT_TO_NODE = {
 
 
 def routing_func_multi(state: AgentState):
-    """多意图路由 - 单意图直接处理，多意图路由到 multi_intent_node
+    """多意图路由 - 单意图直接处理，各组合通过 Send API 实现 LangGraph 原生并行
 
-    多意图时使用 multi_intent_node 内的线程池实现真正的并发
+    多意图时使用 Send fan-out，并行执行各子节点，结果由 multi_join_node 汇合。
     """
     intents = state.get("intents", [state.get("intent", "general")])
     print(f"[Router] routing_func_multi - 多意图路由: {intents}")
 
-    # 过滤出有效的意图节点（排除 confirm/profile/general/stats 这些需要特殊处理的）
-    special_intents = {"confirm", "profile_update", "general", "stats_query"}
+    special_intents = {"confirm", "profile_update", "general"}
     intent_nodes = []
     has_special = False
+    has_regular = False
 
     for intent in intents:
         if intent in special_intents:
             has_special = True
-        if intent in INTENT_TO_NODE:
+        elif intent in INTENT_TO_NODE:
+            has_regular = True
             node = INTENT_TO_NODE[intent]
             if node not in intent_nodes:
                 intent_nodes.append(node)
 
-    # 过滤掉特殊意图，看还剩什么普通意图
-    regular_intents = [i for i in intents if i not in special_intents]
-
-    # 如果有特殊意图且没有普通意图，交给对应节点单独处理
-    if has_special and not regular_intents:
+    if has_special and not has_regular:
         for intent in intents:
             if intent in special_intents and intent in INTENT_TO_NODE:
                 print(f"[Router] routing_func_multi - 特殊意图 {intent}，路由到 {INTENT_TO_NODE[intent]}")
                 return INTENT_TO_NODE[intent]
     elif has_special:
-        # 特殊意图 + 其他意图 → 多意图并发
-        print(f"[Router] routing_func_multi - 特殊意图混合多意图，路由到 multi_intent_node")
-        return "multi_intent_node"
+        print(f"[Router] routing_func_multi - 特殊意图混合多意图，路由到 general_node")
+        return "general_node"
 
     if not intent_nodes:
         print(f"[Router] routing_func_multi - 无有效意图，使用 general_node")
         return "general_node"
 
-    # 单节点
     if len(intent_nodes) == 1:
         print(f"[Router] routing_func_multi - 单意图，路由到 {intent_nodes[0]}")
         return intent_nodes[0]
 
-    # 多节点 - 路由到 multi_intent_node，在那里用线程池并发执行
-    print(f"[Router] routing_func_multi - 多意图，路由到 multi_intent_node")
-    return "multi_intent_node"
+    # 多意图组合 → Send fan-out
+    nodes_set = set(intent_nodes)
+    if nodes_set == {"food_node", "workout_node"}:
+        print(f"[Router] routing_func_multi - food + workout，Send fan-out 到 food_workout_node")
+        return [Send("food_workout_node", dict(state, intents=intents))]
+    if nodes_set == {"food_node", "stats_node"}:
+        print(f"[Router] routing_func_multi - food + stats，Send fan-out 到 food_stats_node")
+        return [Send("food_stats_node", dict(state, intents=intents))]
+    if nodes_set == {"workout_node", "stats_node"}:
+        print(f"[Router] routing_func_multi - workout + stats，Send fan-out 到 workout_stats_node")
+        return [Send("workout_stats_node", dict(state, intents=intents))]
+
+    print(f"[Router] routing_func_multi - 多意图混合，路由到 general_node")
+    return "general_node"
 
 
 def create_workflow(checkpointer=None):
@@ -147,7 +154,10 @@ def create_workflow(checkpointer=None):
     builder.add_node("profile_node", router.handle_profile_update)
     builder.add_node("general_node", router.handle_general)
     builder.add_node("stats_node", router.handle_stats_query)
-    builder.add_node("multi_intent_node", multi_intent_node)
+    builder.add_node("food_workout_node", food_workout_node)
+    builder.add_node("food_stats_node", food_stats_node)
+    builder.add_node("workout_stats_node", workout_stats_node)
+    builder.add_node("multi_join_node", multi_join_node)
 
     builder.set_entry_point("check_profile")
 
@@ -175,7 +185,9 @@ def create_workflow(checkpointer=None):
             "confirm_node": "confirm_node",
             "profile_node": "profile_node",
             "general_node": "general_node",
-            "multi_intent_node": "multi_intent_node",
+            "food_workout_node": "food_workout_node",
+            "food_stats_node": "food_stats_node",
+            "workout_stats_node": "workout_stats_node",
         }
     )
 
@@ -187,7 +199,11 @@ def create_workflow(checkpointer=None):
     builder.add_edge("confirm_node", END)
     builder.add_edge("profile_node", END)
     builder.add_edge("general_node", END)
-    builder.add_edge("multi_intent_node", END)
+    # 多意图并行节点 → 汇合节点 → END
+    builder.add_edge("food_workout_node", "multi_join_node")
+    builder.add_edge("food_stats_node", "multi_join_node")
+    builder.add_edge("workout_stats_node", "multi_join_node")
+    builder.add_edge("multi_join_node", END)
 
     # 编译时添加 checkpointer（如果传入）
     if checkpointer:

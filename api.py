@@ -18,10 +18,31 @@ from agent.memory_agent import get_memory_agent
 from agent.router_agent import RouterAgent
 from agent.llm import get_llm
 
-# 创建 FastAPI 应用
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    """启动时预热检索器，避免第一次请求时加载 LLM/jieba/BM25 阻塞"""
+    import threading
+
+    def _warmup():
+        from tools.retriever import get_hybrid_retriever
+        print("[Startup] 预热检索器...")
+        get_llm()  # 预加载 LLM（QueryRewriter 依赖）
+        import jieba
+        list(jieba.cut("预热"))  # 预加载 jieba（BM25Okapi 依赖）
+        retriever = get_hybrid_retriever("fitness_guide")
+        retriever.retrieve("预热")  # 预初始化 HybridRetriever（加载 BM25 索引）
+        print("[Startup] 检索器预热完成")
+
+    threading.Thread(target=_warmup, daemon=True).start()
+    yield
+
+
 app = FastAPI(
     title="健身健康智能助手 API",
-    description="基于 LangGraph 的健身健康智能体，提供食物营养分析、食谱推荐、健身指导等功能"
+    description="基于 LangGraph 的健身健康智能体，提供食物营养分析、食谱推荐、健身指导等功能",
+    lifespan=lifespan,
 )
 
 # CORS 配置
@@ -33,7 +54,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局 app（暂时禁用 checkpointer 以排查流式输出问题）
+# 全局 workflow
 app_obj = create_workflow(checkpointer=default_checkpointer)
 memory_agent = get_memory_agent()
 

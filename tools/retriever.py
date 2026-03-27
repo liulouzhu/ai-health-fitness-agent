@@ -367,10 +367,16 @@ class HybridRetriever:
         }
 
 
+# 全局缓存，避免每次请求重新初始化 HybridRetriever
+_retriever_cache: dict[str, HybridRetriever] = {}
+
+
 def get_hybrid_retriever(collection_name: str) -> HybridRetriever:
-    """创建混合检索器"""
-    from qdrant_client import QdrantClient
-    from agent.llm import get_embedding_model
-    qdrant_client = QdrantClient(host=AgentConfig.QDRANT_HOST, port=AgentConfig.QDRANT_PORT)
-    embed_model = get_embedding_model()
-    return HybridRetriever(collection_name, qdrant_client, embed_model)
+    """创建混合检索器（带缓存，同一 collection 只初始化一次）"""
+    if collection_name not in _retriever_cache:
+        from qdrant_client import QdrantClient
+        from agent.llm import get_embedding_model
+        qdrant_client = QdrantClient(host=AgentConfig.QDRANT_HOST, port=AgentConfig.QDRANT_PORT)
+        embed_model = get_embedding_model()
+        _retriever_cache[collection_name] = HybridRetriever(collection_name, qdrant_client, embed_model)
+    return _retriever_cache[collection_name]

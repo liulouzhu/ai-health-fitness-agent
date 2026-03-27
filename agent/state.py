@@ -65,6 +65,7 @@ class AgentState(TypedDict):
     # --- 子Agent结果 ---
     food_result: Optional[str]           # food agent 输出
     workout_result: Optional[str]        # workout agent 输出
+    stats_result: Optional[str]          # stats agent 输出（多意图时使用）
     recipe_result: Optional[str]          # recipe agent 输出
 
     # --- 待确认数据 ---

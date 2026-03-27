@@ -82,12 +82,12 @@ class RouterAgent:
             # 判断是否是用户主动报告吃食物或做运动
             is_reporting = self._is_user_reporting_food_or_workout(user_input)
 
-            # 如果是主动报告且意图是 food/workout，修改意图类型
+            # 如果是主动报告，将列表中所有 food/workout 升级为 food_report/workout_report
             if is_reporting:
-                if valid_intents[0] == "food":
-                    valid_intents = ["food_report"] + valid_intents[1:]
-                elif valid_intents[0] == "workout":
-                    valid_intents = ["workout_report"] + valid_intents[1:]
+                valid_intents = [
+                    "food_report" if i == "food" else ("workout_report" if i == "workout" else i)
+                    for i in valid_intents
+                ]
 
             # 保留第一个作为主意图（兼容现有逻辑）
             state["intent"] = valid_intents[0]

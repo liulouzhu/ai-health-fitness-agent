@@ -205,30 +205,32 @@ class MemoryManager:
         return {"changed": True, "updates": updates, "profile": current}
 
     def _calculate_targets(self, profile: dict) -> dict:
-        """计算目标热量和蛋白质"""
-        prompt = """根据用户档案计算目标热量和蛋白质。
+        """计算目标热量和蛋白质（本地计算，无需 LLM）"""
+        h = profile.get("height", 0)
+        w = profile.get("weight", 0)
+        age = profile.get("age", 0)
+        gender = profile.get("gender", "male")
+        goal = profile.get("goal", "maintain")
 
-用户档案：
-{profile}
+        # 基础代谢率 (BMR)
+        if gender == "male":
+            bmr = 66 + 13.7 * w + 5 * h - 6.8 * age
+        else:
+            bmr = 655 + 9.6 * w + 1.8 * h - 4.7 * age
 
-请计算并返回JSON：
-{{"target_calories": 数字, "target_protein": 数字}}
+        # 每日所需 = BMR × 1.5（轻量活动）
+        tdee = bmr * 1.5
 
-计算规则：
-- 基础代谢率(BMR)：
-  - 男 = 66 + 13.7×体重(kg) + 5×身高(cm) - 6.8×年龄
-  - 女 = 655 + 9.6×体重(kg) + 1.8×身高(cm) - 4.7×年龄
-- 每日所需 = BMR × 1.5（轻量活动）
-- 减脂：每日所需 - 400
-- 增肌：每日所需 + 400
-- 维持：每日所需
-- 蛋白质：体重(kg) × 1.6 g""".format(profile=profile)
-        response = self.llm.invoke([{"role": "user", "content": prompt}])
+        # 根据目标调整
+        goal_adjustments = {"cut": -400, "bulk": 400, "maintain": 0}
+        target_calories = tdee + goal_adjustments.get(goal, 0)
 
-        data = self._extract_json_from_response(response.content)
+        # 蛋白质：体重 × 1.6 g
+        target_protein = w * 1.6
+
         return {
-            "target_calories": int(data.get("target_calories", 0)),
-            "target_protein": int(data.get("target_protein", 0))
+            "target_calories": int(target_calories),
+            "target_protein": int(target_protein)
         }
 
     def is_profile_complete(self) -> bool:

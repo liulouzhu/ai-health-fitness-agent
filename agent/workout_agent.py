@@ -1,10 +1,8 @@
-import re
-from langchain_core.tools import tool as lc_tool
 from pydantic import BaseModel
 from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
-from agent.context_manager import get_context_manager
+from agent.context_manager import get_context_manager, is_retrieval_sufficient as check_retrieval
 from tools.search_with_tavily import search_with_tavily
 from tools.retriever import get_hybrid_retriever
 
@@ -40,19 +38,6 @@ class WorkoutAgent:
             print(f"Qdrant检索失败: {e}")
             return []
 
-    def _is_retrieval_sufficient(self, query: str, retrieved_results: list) -> bool:
-        """判断检索内容是否足够"""
-        if not retrieved_results:
-            return False
-        retrieved_content = "\n".join([r.text for r in retrieved_results])
-        judge_prompt = (
-            f"判断以下检索内容是否足够回答用户的问题。\n\n"
-            f"用户问题：{query}\n\n检索内容：{retrieved_content[:2000]}\n\n"
-            f"如果检索内容足够回答问题，返回\"足够\"。如果不足，返回\"不足\"。\n只返回\"足够\"或\"不足\"，不要其他文字。"
-        )
-        response = self.llm.invoke([{"role": "user", "content": judge_prompt}])
-        return "足够" in response.content
-
     def _extract_workout_info(self, user_input: str) -> dict:
         """从用户输入中提取运动信息"""
         try:
@@ -87,7 +72,7 @@ class WorkoutAgent:
             retrieved_content = "\n".join([r.text for r in retrieved_results]) if retrieved_results else ""
 
             # 2. 判断检索是否足够，不足则联网补充
-            if not self._is_retrieval_sufficient(query, retrieved_results):
+            if not check_retrieval(retrieved_content, query=query, domain="workout"):
                 tavily_content = search_with_tavily(query)
                 if tavily_content:
                     retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"

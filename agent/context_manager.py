@@ -24,6 +24,44 @@ from config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
+# ============ 共享工具函数 ============
+
+def is_retrieval_sufficient(retrieved_content: str, query: str = None, domain: str = "通用") -> bool:
+    """
+    判断检索内容是否足够。
+
+    Args:
+        retrieved_content: 检索返回的文本内容
+        query: 原始用户问题（可选，部分场景需要）
+        domain: 领域标识，用于构造合适的判断提示词
+    """
+    if not retrieved_content:
+        return False
+
+    from agent.llm import get_llm
+    llm = get_llm()
+
+    if domain == "recipe":
+        judge_prompt = (
+            f"判断以下检索内容是否足够推荐食谱。\n\n检索内容：{retrieved_content[:2000]}\n\n"
+            f"如果检索内容足够，返回\"足够\"。如果不足，返回\"不足\"。\n只返回\"足够\"或\"不足\"。"
+        )
+    elif domain == "workout":
+        judge_prompt = (
+            f"判断以下检索内容是否足够回答用户的问题。\n\n"
+            f"用户问题：{query}\n\n检索内容：{retrieved_content[:2000]}\n\n"
+            f"如果检索内容足够回答问题，返回\"足够\"。如果不足，返回\"不足\"。\n只返回\"足够\"或\"不足\"，不要其他文字。"
+        )
+    else:
+        judge_prompt = (
+            f"判断以下检索内容是否足够回答用户的问题。\n\n检索内容：{retrieved_content[:2000]}\n\n"
+            f"如果检索内容足够，返回\"足够\"。如果不足，返回\"不足\"。\n只返回\"足够\"或\"不足\"。"
+        )
+
+    response = llm.invoke([{"role": "user", "content": judge_prompt}])
+    return "足够" in response.content
+
+
 # ============ 分层数据结构 ============
 
 class ContextBundle(TypedDict, total=False):
@@ -411,56 +449,55 @@ class ContextManager:
         return {"profile": profile, "preferences": preferences}
 
     def _build_task_context(self, intent: str, state: AgentState) -> Dict:
-        """
-        按 intent 加载不同的业务上下文
-        """
-        ctx: Dict[str, Any] = {}
-
+        """按 intent 加载不同的业务上下文"""
         if intent in ("food", "food_report"):
-            today = self.memory.load_daily_stats()
-            profile = self.memory.load_profile()
-            ctx["daily_stats"] = today
-            ctx["profile"] = profile
-
+            return self._build_food_context()
         elif intent in ("workout", "workout_report"):
-            prefs = self.memory.load_preferences()
-            today = self.memory.load_daily_stats()
-            ctx["workout_preferences"] = prefs.get("workout_preferences", {})
-            ctx["daily_stats"] = today
-
+            return self._build_workout_context()
         elif intent == "recipe":
-            profile = self.memory.load_profile()
-            today = self.memory.load_daily_stats()
-            prefs = self.memory.load_preferences()
-            target_cal = int(profile.get("target_calories", 2000))
-            target_pro = int(profile.get("target_protein", 100))
-            consumed_cal = today.get("consumed_calories", 0)
-            consumed_pro = today.get("consumed_protein", 0)
-            burned_cal = today.get("burned_calories", 0)
-            ctx.update({
-                "target_calories": target_cal,
-                "target_protein": target_pro,
-                "consumed_calories": consumed_cal,
-                "consumed_protein": consumed_pro,
-                "burned_calories": burned_cal,
-                "remaining_calories": max(0, target_cal - consumed_cal + burned_cal),
-                "remaining_protein": max(0, target_pro - consumed_pro),
-                "goal": profile.get("goal", "维持"),
-                "preferences": prefs,
-                "daily_stats": today,
-            })
-
+            return self._build_recipe_context()
         elif intent == "stats_query":
-            today = self.memory.load_daily_stats()
-            profile = self.memory.load_profile()
-            ctx["daily_stats"] = today
-            ctx["profile"] = profile
-
+            return self._build_stats_context()
         elif intent == "confirm":
-            pending = self.memory.load_pending_stats()
-            ctx["pending_stats"] = pending
+            return {"pending_stats": self.memory.load_pending_stats()}
+        return {}
 
-        return ctx
+    def _build_food_context(self) -> Dict:
+        today = self.memory.load_daily_stats()
+        profile = self.memory.load_profile()
+        return {"daily_stats": today, "profile": profile}
+
+    def _build_workout_context(self) -> Dict:
+        prefs = self.memory.load_preferences()
+        today = self.memory.load_daily_stats()
+        return {"workout_preferences": prefs.get("workout_preferences", {}), "daily_stats": today}
+
+    def _build_recipe_context(self) -> Dict:
+        profile = self.memory.load_profile()
+        today = self.memory.load_daily_stats()
+        prefs = self.memory.load_preferences()
+        target_cal = int(profile.get("target_calories", AgentConfig.DEFAULT_TARGET_CALORIES))
+        target_pro = int(profile.get("target_protein", AgentConfig.DEFAULT_TARGET_PROTEIN))
+        consumed_cal = today.get("consumed_calories", 0)
+        consumed_pro = today.get("consumed_protein", 0)
+        burned_cal = today.get("burned_calories", 0)
+        return {
+            "target_calories": target_cal,
+            "target_protein": target_pro,
+            "consumed_calories": consumed_cal,
+            "consumed_protein": consumed_pro,
+            "burned_calories": burned_cal,
+            "remaining_calories": max(0, target_cal - consumed_cal + burned_cal),
+            "remaining_protein": max(0, target_pro - consumed_pro),
+            "goal": profile.get("goal", "维持"),
+            "preferences": prefs,
+            "daily_stats": today,
+        }
+
+    def _build_stats_context(self) -> Dict:
+        today = self.memory.load_daily_stats()
+        profile = self.memory.load_profile()
+        return {"daily_stats": today, "profile": profile}
 
     def _build_extra_context(self, intent: str, task_context: Dict) -> str:
         """
@@ -518,8 +555,8 @@ class ContextManager:
             stats = task_context.get("daily_stats", {})
             profile = task_context.get("profile", {})
             if stats:
-                target_cal = int(profile.get("target_calories", 2000))
-                target_pro = int(profile.get("target_protein", 100))
+                target_cal = int(profile.get("target_calories", AgentConfig.DEFAULT_TARGET_CALORIES))
+                target_pro = int(profile.get("target_protein", AgentConfig.DEFAULT_TARGET_PROTEIN))
                 remaining = max(0, target_cal - stats.get("consumed_calories", 0) + stats.get("burned_calories", 0))
                 parts.append(f"今日摄入：{int(stats.get('consumed_calories', 0))} / {target_cal} kcal")
                 parts.append(f"今日蛋白：{stats.get('consumed_protein', 0):.0f} / {target_pro} g")

@@ -2,9 +2,11 @@ from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
 from agent.context_manager import get_context_manager
-from config import AgentConfig
 
 INTENT_TYPES = ["food", "workout", "recipe", "stats_query", "profile_update", "confirm", "general", "food_report", "workout_report"]
+
+CONFIRM_WORDS = ["是", "好的", "记录", "yes", "确认", "计入", "算", "嗯", "ok", "okay"]
+DENY_WORDS = ["no", "取消", "不算", "不计入"]
 
 
 class RouterAgent:
@@ -128,8 +130,7 @@ class RouterAgent:
         """判断是否是确认回答"""
         if not user_input:
             return False
-        confirm_words = ["是", "好的", "记录", "yes", "确认", "计入", "算", "嗯", "ok", "no", "取消", "不算", "不计入"]
-        return len(user_input) <= 10 and any(word in user_input for word in confirm_words)
+        return len(user_input) <= 10 and any(word in user_input for word in CONFIRM_WORDS + DENY_WORDS)
 
     def _is_user_reporting_food_or_workout(self, text: str) -> bool:
         """判断用户是否在主动报告吃食物或做运动"""
@@ -139,12 +140,6 @@ class RouterAgent:
         workout_report_words = ["跑了", "跑了步", "做了", "做了运动", "健身了", "练了", "锻炼了", "运动了", "跑步了", "游泳了", "骑车了", "走路了", "跳绳了", "打球了", "健身"]
         text_lower = text.lower()
         return any(word in text_lower for word in food_report_words + workout_report_words)
-
-    def routing_func(self, state: AgentState) -> str:
-        """条件路由函数"""
-        intent = state.get("intent", "general")
-        print(f"[Router] routing_func - 路由到: {intent}")
-        return intent
 
     def handle_profile_update(self, state: AgentState) -> AgentState:
         """处理档案更新"""
@@ -182,8 +177,9 @@ class RouterAgent:
             state["response"] = "没有待确认的记录，请先查询食物或运动信息。"
             return state
 
-        # 判断是肯定还是否定
-        is_yes = any(word in user_input for word in ["是", "好的", "记录", "yes", "确认", "计入", "算", "嗯", "ok", "okay"])
+        # 判断是肯定还是否定（优先检查否定词，防止"不算"/"不计入"等部分匹配）
+        is_deny = any(word == user_input for word in DENY_WORDS)
+        is_yes = not is_deny and any(word in user_input for word in CONFIRM_WORDS)
 
         if is_yes:
             # 保存统计（支持 multi 类型：同时保存 food 和 workout）

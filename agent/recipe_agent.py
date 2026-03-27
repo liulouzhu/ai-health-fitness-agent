@@ -1,7 +1,7 @@
 from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
-from agent.context_manager import get_context_manager
+from agent.context_manager import get_context_manager, is_retrieval_sufficient
 from tools.search_with_tavily import search_with_tavily
 from tools.retriever import get_hybrid_retriever
 
@@ -51,17 +51,6 @@ class RecipeAgent:
             print(f"食谱检索失败: {e}")
             return []
 
-    def _is_retrieval_sufficient(self, retrieved_content: str) -> bool:
-        """判断检索内容是否足够"""
-        if not retrieved_content:
-            return False
-        judge_prompt = (
-            f"判断以下检索内容是否足够推荐食谱。\n\n检索内容：{retrieved_content[:2000]}\n\n"
-            f"如果检索内容足够，返回\"足够\"。如果不足，返回\"不足\"。\n只返回\"足够\"或\"不足\"。"
-        )
-        response = self.llm.invoke([{"role": "user", "content": judge_prompt}])
-        return "足够" in response.content
-
     def _build_retrieval_query(self, user_input: str, ctx: dict) -> str:
         """构建检索 query：融合用户需求 + 营养约束 + 目标"""
         user_constraints = self._extract_constraints_from_input(user_input)
@@ -96,7 +85,7 @@ class RecipeAgent:
             retrieved_content = "\n".join([r.text for r in retrieved_results]) if retrieved_results else ""
 
             # 3. 判断检索是否足够，不足则联网补充
-            if not self._is_retrieval_sufficient(retrieved_content):
+            if not is_retrieval_sufficient(retrieved_content, domain="recipe"):
                 tavily_content = search_with_tavily(query)
                 if tavily_content:
                     retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"

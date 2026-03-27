@@ -1,38 +1,14 @@
 from langchain_core.messages import HumanMessage
-from langchain_core.tools import tool
-from pydantic import BaseModel
 from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
 from agent.context_manager import get_context_manager
 
 
-class NutritionInfo(BaseModel):
-    """营养信息结构"""
-    name: str
-    calories: float
-    protein: float
-    fat: float
-    carbs: float
-
-
-@tool
-def extract_nutrition(food_description: str) -> NutritionInfo:
-    """从食物描述中提取营养信息"""
-    return NutritionInfo(
-        name=food_description,
-        calories=0,
-        protein=0,
-        fat=0,
-        carbs=0
-    )
-
-
 class FoodAgent:
     def __init__(self):
         self.llm = get_llm()
         self.memory_agent = get_memory_agent()
-        self.llm_with_tools = self.llm.bind_tools([extract_nutrition])
 
     def _extract_nutrition(self, food_description: str) -> dict:
         """从食物描述中提取营养数据"""

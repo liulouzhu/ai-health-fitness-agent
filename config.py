@@ -47,5 +47,9 @@ class AgentConfig:
     MAX_RETRIEVED_KNOWLEDGE_TOKENS = 2000  # 检索内容上限
     # 字符 → token 估算比率（中英文混合文本的近似值）
     CHARS_PER_TOKEN_ESTIMATE = 3.5
+
+    # 营养目标默认值
+    DEFAULT_TARGET_CALORIES = 2000
+    DEFAULT_TARGET_PROTEIN = 100
     # Token 估算器模式："tiktoken"=真实 tokenizer，"chars"=字符数/CHARS_PER_TOKEN_ESTIMATE
     TOKEN_ESTIMATOR_MODE = "auto"   # "auto"=优先 tiktoken，失败则 fallback

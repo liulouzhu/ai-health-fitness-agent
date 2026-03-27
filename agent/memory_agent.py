@@ -19,38 +19,6 @@ PENDING_STATS_FILE = "memory/pending_stats.json"
 PENDING_PREFERENCES_FILE = "memory/pending_preferences.json"
 CONSOLIDATION_THRESHOLD = 5  # 每 N 条消息触发一次整合
 
-# ============ 整合用的 Prompt ============
-CONSOLIDATE_PREFERENCES_PROMPT = """你是一个偏好整合专家。请从以下多条用户消息中整合出完整的用户偏好。
-
-现有偏好（参考，保持不变）：
-{current_preferences}
-
-待处理的用户消息（按时间顺序）：
-{messages}
-
-请分析所有消息，提取并返回JSON格式的完整偏好（只返回JSON）：
-{{
-    "food_preferences": {{
-        "liked": ["喜欢的食物（去重后）"],
-        "disliked": ["不喜欢或不能吃的食物（去重后）"],
-        "allergies": ["食物过敏（去重后）"]
-    }},
-    "workout_preferences": {{
-        "liked": ["喜欢的运动类型（去重后）"],
-        "disliked": ["不喜欢或不适合的运动（去重后）"],
-        "available_equipment": ["可用的健身设备（去重后）"],
-        "limitations": ["运动限制或伤病（去重后）"]
-    }},
-    "dietary_restrictions": ["饮食限制（去重后）"],
-    "schedule_preferences": ["作息偏好（去重后）"],
-    "other": ["其他偏好（去重后）"]
-}}
-
-注意：
-1. 保留现有偏好中不冲突的内容
-2. 只新增新发现的信息，不要删除已有的有效信息
-3. 对类似的信息进行去重合并"""
-
 # ============ 模板定义 ============
 MEAL_ENTRY_TEMPLATE = "- {name}: {calories} kcal, {protein}g蛋白"
 WORKOUT_ENTRY_TEMPLATE = "- {type}: {duration}分钟, {calories} kcal"
@@ -74,42 +42,6 @@ DAILY_STATS_TEMPLATE = """# 每日统计 {date}
 - 剩余蛋白质: {remaining_protein} g
 """
 
-# ============ 对话摘要 Prompt ============
-SUMMARIZE_CONVERSATION_PROMPT = """请对以下对话内容进行摘要，提取关键信息。
-
-对话历史：
-{conversation_history}
-
-请以以下JSON格式返回摘要：
-{{
-    "summary": "用2-3句话概括本次对话的主要内容和结果",
-    "learned_preferences": ["从对话中学到的用户偏好（如有）"],
-    "important_facts": ["重要的用户事实或决定（如有）"],
-    "topics_discussed": ["讨论的主题列表"]
-}}"""
-
-EXTRACT_PREFERENCES_PROMPT = """从用户消息中提取偏好信息。
-
-用户消息：{user_message}
-
-请分析并返回JSON格式的偏好（只返回JSON，不要其他内容）：
-{{
-    "food_preferences": {{
-        "liked": ["喜欢的食物（如有）"],
-        "disliked": ["不喜欢或不能吃的食物（如有）"],
-        "allergies": ["食物过敏（如有）"]
-    }},
-    "workout_preferences": {{
-        "liked": ["喜欢的运动类型（如有）"],
-        "disliked": ["不喜欢或不适合的运动（如有）"],
-        "available_equipment": ["可用的健身设备（如有）"],
-        "limitations": ["运动限制或伤病（如有）"]
-    }},
-    "dietary_restrictions": ["饮食限制，如素食、清真等（如有）"],
-    "schedule_preferences": ["时间偏好，如早起/夜猫子（如有）"],
-    "other": ["其他偏好（如有）"]
-}}"""
-
 INITIAL_QUESTIONS = """你好！我是你的健身健康助手。为了给你提供更好的服务，请告诉我以下信息：
 
 1. 身高（cm）
@@ -119,41 +51,6 @@ INITIAL_QUESTIONS = """你好！我是你的健身健康助手。为了给你提
 5. 健身目标（减脂 / 增肌 / 维持）
 
 请直接回复，例如：身高175，体重70，年龄25，性别男，目标减脂"""
-
-PROFILE_EXTRACT_PROMPT = """从用户回答中提取用户档案信息。
-
-用户回答：{answer}
-
-请以以下格式回复（只返回JSON，不要其他内容）：
-{{"height": 数字, "weight": 数字, "age": 数字, "gender": "male/female", "goal": "减脂/增肌/维持"}}"""
-
-UPDATE_EXTRACT_PROMPT = """分析用户话语，提取发生变化的字段。
-
-用户原档案：
-{current_profile}
-
-用户话语：{user_message}
-
-请回复发生了哪些字段的变化，格式如下（只返回JSON，不要其他内容）：
-{{"changed": true/false, "updates": {{"height": 数字, "weight": 数字, "age": 数字, "gender": "male/female", "goal": "减脂/增肌/维持"}}}}"""
-
-CALCULATE_TARGETS_PROMPT = """根据用户档案计算目标热量和蛋白质。
-
-用户档案：
-{profile}
-
-请计算并返回JSON：
-{{"target_calories": 数字, "target_protein": 数字}}
-
-计算规则：
-- 基础代谢率(BMR)：
-  - 男 = 66 + 13.7×体重(kg) + 5×身高(cm) - 6.8×年龄
-  - 女 = 655 + 9.6×体重(kg) + 1.8×身高(cm) - 4.7×年龄
-- 每日所需 = BMR × 1.5（轻量活动）
-- 减脂：每日所需 - 400
-- 增肌：每日所需 + 400
-- 维持：每日所需
-- 蛋白质：体重(kg) × 1.6 g"""
 
 
 class MemoryManager:
@@ -239,7 +136,12 @@ class MemoryManager:
 
     def create_profile(self, answer: str) -> dict:
         """从用户回答创建档案"""
-        prompt = PROFILE_EXTRACT_PROMPT.format(answer=answer)
+        prompt = """从用户回答中提取用户档案信息。
+
+用户回答：{answer}
+
+请以以下格式回复（只返回JSON，不要其他内容）：
+{{"height": 数字, "weight": 数字, "age": 数字, "gender": "male/female", "goal": "减脂/增肌/维持"}}""".format(answer=answer)
         response = self.llm.invoke([{"role": "user", "content": prompt}])
 
         data = self._extract_json_from_response(response.content)
@@ -271,7 +173,15 @@ class MemoryManager:
         if not current.get("height"):
             return {"changed": False, "message": "请先创建用户档案"}
 
-        prompt = UPDATE_EXTRACT_PROMPT.format(
+        prompt = """分析用户话语，提取发生变化的字段。
+
+用户原档案：
+{current_profile}
+
+用户话语：{user_message}
+
+请回复发生了哪些字段的变化，格式如下（只返回JSON，不要其他内容）：
+{{"changed": true/false, "updates": {{"height": 数字, "weight": 数字, "age": 数字, "gender": "male/female", "goal": "减脂/增肌/维持"}}}}""".format(
             current_profile=str(current),
             user_message=user_message
         )
@@ -296,7 +206,23 @@ class MemoryManager:
 
     def _calculate_targets(self, profile: dict) -> dict:
         """计算目标热量和蛋白质"""
-        prompt = CALCULATE_TARGETS_PROMPT.format(profile=profile)
+        prompt = """根据用户档案计算目标热量和蛋白质。
+
+用户档案：
+{profile}
+
+请计算并返回JSON：
+{{"target_calories": 数字, "target_protein": 数字}}
+
+计算规则：
+- 基础代谢率(BMR)：
+  - 男 = 66 + 13.7×体重(kg) + 5×身高(cm) - 6.8×年龄
+  - 女 = 655 + 9.6×体重(kg) + 1.8×身高(cm) - 4.7×年龄
+- 每日所需 = BMR × 1.5（轻量活动）
+- 减脂：每日所需 - 400
+- 增肌：每日所需 + 400
+- 维持：每日所需
+- 蛋白质：体重(kg) × 1.6 g""".format(profile=profile)
         response = self.llm.invoke([{"role": "user", "content": prompt}])
 
         data = self._extract_json_from_response(response.content)
@@ -306,13 +232,26 @@ class MemoryManager:
         }
 
     def is_profile_complete(self) -> bool:
-        """检查档案是否完整"""
-        profile = self.load_profile()
+        """检查档案是否完整（轻量级检查，直接读原始内容）"""
+        if not os.path.exists(self.memory_path):
+            return False
+        with open(self.memory_path, "r", encoding="utf-8") as f:
+            content = f.read()
         required = ["height", "weight", "age", "gender", "goal"]
-        return all(
-            profile.get(k) and profile.get(k) != "0" and profile.get(k) != "unknown"
-            for k in required
-        )
+        for key in required:
+            # 格式: "- key: value"，检查 key 是否存在且值不是占位符
+            pattern = f"- {key}: "
+            idx = content.find(pattern)
+            if idx == -1:
+                return False
+            # 检查冒号后是否有非空非占位符内容
+            start = idx + len(pattern)
+            line_end = content.find("\n", start)
+            line_end = line_end if line_end != -1 else len(content)
+            value = content[start:line_end].strip()
+            if not value or value in ("0", "unknown", ""):
+                return False
+        return True
 
     # ============ 每日统计 ============
 
@@ -395,84 +334,62 @@ class MemoryManager:
         match = re.search(r'\d+\.?\d*', line)
         return match.group() if match else "0"
 
-    def _parse_meal_line(self, line: str) -> dict | None:
-        """解析餐食记录行: "- 午餐: 500 kcal, 30g蛋白"
-        可能格式:
-        - "- 午餐: 500 kcal, 30g蛋白"
-        - "- 午餐: 500 kcal, 30g蛋白, 20g脂肪, 50g碳水"
-        """
-        try:
-            # 移除开头的 "- "
-            line = line[2:].strip()
-
-            # 提取名称（冒号之前的部分）
-            if ": " not in line:
-                return None
-            name, rest = line.split(": ", 1)
-
-            meal = {"name": name.strip()}
-
-            # 提取热量
-            cal_match = re.search(r'(\d+)\s*kcal', rest)
-            if cal_match:
-                meal["calories"] = int(cal_match.group(1))
-
-            # 提取蛋白质
-            pro_match = re.search(r'(\d+)\s*g.*蛋白', rest)
-            if pro_match:
-                meal["protein"] = float(pro_match.group(1))
-
-            # 提取脂肪（可选）
-            fat_match = re.search(r'(\d+)\s*g.*脂肪', rest)
-            if fat_match:
-                meal["fat"] = float(fat_match.group(1))
-
-            # 提取碳水（可选）
-            carbs_match = re.search(r'(\d+)\s*g.*碳水', rest)
-            if carbs_match:
-                meal["carbs"] = float(carbs_match.group(1))
-
-            return meal if "calories" in meal or "protein" in meal else None
-        except Exception:
+    def _split_dashed_line(self, line: str) -> tuple[str, str] | None:
+        """解析以 "- " 开头的行，返回 (名称, 剩余内容) 或 None"""
+        if not line.startswith("- "):
             return None
+        stripped = line[2:].strip()
+        if ": " not in stripped:
+            return None
+        name, rest = stripped.split(": ", 1)
+        return name.strip(), rest
+
+    def _parse_meal_line(self, line: str) -> dict | None:
+        """解析餐食记录行: "- 午餐: 500 kcal, 30g蛋白"等"""
+        result = self._split_dashed_line(line)
+        if result is None:
+            return None
+        name, rest = result
+        meal = {"name": name}
+
+        cal_match = re.search(r'(\d+)\s*kcal', rest)
+        if cal_match:
+            meal["calories"] = int(cal_match.group(1))
+        pro_match = re.search(r'(\d+)\s*g.*蛋白', rest)
+        if pro_match:
+            meal["protein"] = float(pro_match.group(1))
+        fat_match = re.search(r'(\d+)\s*g.*脂肪', rest)
+        if fat_match:
+            meal["fat"] = float(fat_match.group(1))
+        carbs_match = re.search(r'(\d+)\s*g.*碳水', rest)
+        if carbs_match:
+            meal["carbs"] = float(carbs_match.group(1))
+
+        return meal if "calories" in meal or "protein" in meal else None
 
     def _parse_workout_line(self, line: str) -> dict | None:
-        """解析运动记录行: "- 跑步: 30分钟, 300 kcal"
-        可能格式:
-        - "- 跑步: 30分钟, 300 kcal"
-        - "- 力量训练: 45分钟, 200 kcal"
-        """
-        try:
-            # 移除开头的 "- "
-            line = line[2:].strip()
-
-            # 提取名称（冒号之前的部分）
-            if ": " not in line:
-                return None
-            name, rest = line.split(": ", 1)
-
-            workout = {"type": name.strip()}
-
-            # 提取时长
-            duration_match = re.search(r'(\d+)\s*分钟', rest)
-            if duration_match:
-                workout["duration"] = int(duration_match.group(1))
-
-            # 提取热量
-            cal_match = re.search(r'(\d+)\s*kcal', rest)
-            if cal_match:
-                workout["calories"] = int(cal_match.group(1))
-
-            return workout if "duration" in workout or "calories" in workout else None
-        except Exception:
+        """解析运动记录行: "- 跑步: 30分钟, 300 kcal"等"""
+        result = self._split_dashed_line(line)
+        if result is None:
             return None
+        name, rest = result
+        workout = {"type": name}
+
+        duration_match = re.search(r'(\d+)\s*分钟', rest)
+        if duration_match:
+            workout["duration"] = int(duration_match.group(1))
+        cal_match = re.search(r'(\d+)\s*kcal', rest)
+        if cal_match:
+            workout["calories"] = int(cal_match.group(1))
+
+        return workout if "duration" in workout or "calories" in workout else None
 
     def save_daily_stats(self, stats: dict, profile: dict = None) -> None:
         """保存每日统计到markdown文件"""
         # 计算剩余
         if profile:
-            target_cal = int(profile.get("target_calories", 2000))
-            target_pro = int(profile.get("target_protein", 100))
+            target_cal = int(profile.get("target_calories", AgentConfig.DEFAULT_TARGET_CALORIES))
+            target_pro = int(profile.get("target_protein", AgentConfig.DEFAULT_TARGET_PROTEIN))
             remaining_cal = target_cal - stats["consumed_calories"] + stats["burned_calories"]
             remaining_pro = target_pro - stats["consumed_protein"]
         else:
@@ -587,9 +504,18 @@ class MemoryManager:
     # ============ 待确认数据临时存储 ============
 
     def save_pending_stats(self, pending: dict) -> None:
-        """保存待确认数据到临时文件"""
-        with open(PENDING_STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(pending, f, ensure_ascii=False)
+        """保存待确认数据到临时文件（原子写入）"""
+        import tempfile
+        dir_path = os.path.dirname(PENDING_STATS_FILE) or "memory"
+        Path(dir_path).mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(pending, f, ensure_ascii=False)
+            Path(tmp_path).replace(PENDING_STATS_FILE)
+        except Exception:
+            Path(tmp_path).unlink(missing_ok=True)
+            raise
 
     def load_pending_stats(self) -> dict:
         """加载待确认数据"""
@@ -785,7 +711,36 @@ class MemoryManager:
         current_prefs_text = json.dumps(current_prefs, ensure_ascii=False, indent=2)
 
         # 调用一次 LLM 整合所有消息
-        prompt = CONSOLIDATE_PREFERENCES_PROMPT.format(
+        prompt = """你是一个偏好整合专家。请从以下多条用户消息中整合出完整的用户偏好。
+
+现有偏好（参考，保持不变）：
+{current_preferences}
+
+待处理的用户消息（按时间顺序）：
+{messages}
+
+请分析所有消息，提取并返回JSON格式的完整偏好（只返回JSON）：
+{{
+    "food_preferences": {{
+        "liked": ["喜欢的食物（去重后）"],
+        "disliked": ["不喜欢或不能吃的食物（去重后）"],
+        "allergies": ["食物过敏（去重后）"]
+    }},
+    "workout_preferences": {{
+        "liked": ["喜欢的运动类型（去重后）"],
+        "disliked": ["不喜欢或不适合的运动（去重后）"],
+        "available_equipment": ["可用的健身设备（去重后）"],
+        "limitations": ["运动限制或伤病（去重后）"]
+    }},
+    "dietary_restrictions": ["饮食限制（去重后）"],
+    "schedule_preferences": ["作息偏好（去重后）"],
+    "other": ["其他偏好（去重后）"]
+}}
+
+注意：
+1. 保留现有偏好中不冲突的内容
+2. 只新增新发现的信息，不要删除已有的有效信息
+3. 对类似的信息进行去重合并""".format(
             current_preferences=current_prefs_text,
             messages=messages_text
         )
@@ -981,7 +936,18 @@ class MemoryManager:
             for turn in turns_to_summarize
         ])
 
-        prompt = SUMMARIZE_CONVERSATION_PROMPT.format(
+        prompt = """请对以下对话内容进行摘要，提取关键信息。
+
+对话历史：
+{conversation_history}
+
+请以以下JSON格式返回摘要：
+{{
+    "summary": "用2-3句话概括本次对话的主要内容和结果",
+    "learned_preferences": ["从对话中学到的用户偏好（如有）"],
+    "important_facts": ["重要的用户事实或决定（如有）"],
+    "topics_discussed": ["讨论的主题列表"]
+}}""".format(
             conversation_history=conversation_text
         )
         response = self.llm.invoke([{"role": "user", "content": prompt}])

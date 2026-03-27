@@ -129,170 +129,150 @@ def routing_func_multi(state: AgentState):
 
 
 def multi_intent_node(state: AgentState) -> AgentState:
-    """多意图并发执行节点 - 使用线程池真正并发处理多个意图
-
-    food 和 workout 同时执行，减少总等待时间
-    """
+    """多意图并发执行节点 - 使用线程池真正并发处理多个意图"""
     log_node("multi_intent_node (多意图并发执行)")
 
     intents = state.get("intents", [state.get("intent", "general")])
     print(f"[multi_intent_node] 待处理意图: {intents}")
 
-    # 只处理 food 和 workout 的并发（这两个是耗时操作）
-    # 归一化：food_report → food, workout_report → workout（都走同一个 agent）
     has_food = "food" in intents or "food_report" in intents
     has_workout = "workout" in intents or "workout_report" in intents
     has_stats = "stats_query" in intents
 
     if has_food and has_workout:
-        # 真正并发：使用线程池同时执行两个 agent
-        print(f"[multi_intent_node] 并发执行 food_node 和 workout_node")
-
-        food_agent = FoodAgent()
-        workout_agent = WorkoutAgent()
-
-        # 创建独立的 state 副本给每个 agent
-        food_state = dict(state)
-        workout_state = dict(state)
-
-        # 归一化 intent，让 agent 知道自己该走什么逻辑
-        if "food_report" in intents:
-            food_state["intent"] = "food_report"
-        if "workout_report" in intents:
-            workout_state["intent"] = "workout_report"
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            food_future = executor.submit(food_agent.run, food_state)
-            workout_future = executor.submit(workout_agent.run, workout_state)
-
-            # 等待两个都完成
-            food_state = food_future.result()
-            workout_state = workout_future.result()
-
-        # 合并结果
-        # 注意：用 response 而不是 *_result，因为 response 包含确认提示文案
-        responses = []
-        if food_state.get("response"):
-            responses.append(food_state["response"])
-            state["food_result"] = food_state.get("food_result")
-        if workout_state.get("response"):
-            responses.append(workout_state["response"])
-            state["workout_result"] = workout_state.get("workout_result")
-
-        # 合并 pending_stats（两个都可能设置）
-        if food_state.get("pending_stats") and workout_state.get("pending_stats"):
-            # 两个都有，合并
-            state["pending_stats"] = {
-                "type": "multi",
-                "food": food_state["pending_stats"].get("data"),
-                "workout": workout_state["pending_stats"].get("data"),
-                "responses": [food_state["pending_stats"].get("response"), workout_state["pending_stats"].get("response")]
-            }
-        elif food_state.get("pending_stats"):
-            state["pending_stats"] = food_state["pending_stats"]
-        elif workout_state.get("pending_stats"):
-            state["pending_stats"] = workout_state["pending_stats"]
-
-        # 将合并后的 pending_stats 持久化到文件（handle_confirm 读文件）
-        if state.get("pending_stats"):
-            memory_agent = get_memory_agent()
-            memory_agent.save_pending_stats(state["pending_stats"])
-
-        # 合并响应
-        if responses:
-            state["response"] = "\n\n".join(responses)
-        else:
-            state["response"] = "已处理您的请求。"
-
+        _handle_food_workout_concurrent(state, intents)
     elif has_food and has_stats:
-        # food 和 stats_query 并发
-        print(f"[multi_intent_node] 并发执行 food_node 和 stats_query")
-
-        router_agent = RouterAgent()
-        food_agent = FoodAgent()
-
-        # 创建独立的 state 副本，避免并发修改同一个 dict
-        food_state = dict(state)
-        stats_state = dict(state)
-
-        if "food_report" in intents:
-            food_state["intent"] = "food_report"
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            food_future = executor.submit(food_agent.run, food_state)
-            stats_future = executor.submit(router_agent.handle_stats_query, stats_state)
-
-            food_result_state = food_future.result()
-            stats_result_state = stats_future.result()
-
-        responses = []
-        if food_result_state.get("response"):
-            responses.append(food_result_state["response"])
-        if stats_result_state.get("response"):
-            responses.append(stats_result_state["response"])
-
-        # food_agent 的 pending_stats 在其返回值里，router_agent 不产生 pending
-        state["pending_stats"] = food_result_state.get("pending_stats")
-        state["response"] = "\n\n".join(responses) if responses else "已处理您的请求。"
-        # 合并 messages（food_agent 会追加新的 user/assistant 消息）
-        state["messages"] = food_result_state.get("messages", state.get("messages", []))
-
+        _handle_food_stats_concurrent(state, intents)
     elif has_workout and has_stats:
-        # workout 和 stats_query 并发
-        print(f"[multi_intent_node] 并发执行 workout_node 和 stats_query")
-
-        router_agent = RouterAgent()
-        workout_agent = WorkoutAgent()
-
-        # 创建独立的 state 副本，避免并发修改同一个 dict
-        workout_state = dict(state)
-        stats_state = dict(state)
-
-        if "workout_report" in intents:
-            workout_state["intent"] = "workout_report"
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            workout_future = executor.submit(workout_agent.run, workout_state)
-            stats_future = executor.submit(router_agent.handle_stats_query, stats_state)
-
-            workout_result_state = workout_future.result()
-            stats_result_state = stats_future.result()
-
-        responses = []
-        if workout_result_state.get("response"):
-            responses.append(workout_result_state["response"])
-        if stats_result_state.get("response"):
-            responses.append(stats_result_state["response"])
-
-        state["pending_stats"] = workout_result_state.get("pending_stats")
-        state["response"] = "\n\n".join(responses) if responses else "已处理您的请求。"
-        # 合并 messages（workout_agent 会追加新的 user/assistant 消息）
-        state["messages"] = workout_result_state.get("messages", state.get("messages", []))
-
+        _handle_workout_stats_concurrent(state, intents)
     elif has_food:
-        print(f"[multi_intent_node] 仅执行 food_node")
-        food_agent = FoodAgent()
-        food_result = food_agent.run(state)
-        # food_agent.run 已设置 state["response"]（含确认文案），无需覆盖
-
+        _handle_single_intent(state, "food", intents)
     elif has_workout:
-        print(f"[multi_intent_node] 仅执行 workout_node")
-        workout_agent = WorkoutAgent()
-        workout_result = workout_agent.run(state)
-        # workout_agent.run 已设置 state["response"]（含确认文案），无需覆盖
-
+        _handle_single_intent(state, "workout", intents)
     elif has_stats:
-        print(f"[multi_intent_node] 仅执行 stats_query")
         router_agent = RouterAgent()
         router_agent.handle_stats_query(state)
         if not state.get("response"):
             state["response"] = "已处理您的请求。"
-
     else:
         state["response"] = "已处理您的请求。"
 
     print(f"[multi_intent_node] 执行完成，response 长度: {len(state.get('response', '') if state.get('response') else 0)}")
     return state
+
+
+def _handle_food_workout_concurrent(state: AgentState, intents: list):
+    """并发处理 food + workout"""
+    print(f"[multi_intent_node] 并发执行 food_node 和 workout_node")
+
+    food_agent = FoodAgent()
+    workout_agent = WorkoutAgent()
+
+    food_state = dict(state)
+    workout_state = dict(state)
+    if "food_report" in intents:
+        food_state["intent"] = "food_report"
+    if "workout_report" in intents:
+        workout_state["intent"] = "workout_report"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        food_future = executor.submit(food_agent.run, food_state)
+        workout_future = executor.submit(workout_agent.run, workout_state)
+        food_state = food_future.result()
+        workout_state = workout_future.result()
+
+    responses = []
+    if food_state.get("response"):
+        responses.append(food_state["response"])
+        state["food_result"] = food_state.get("food_result")
+    if workout_state.get("response"):
+        responses.append(workout_state["response"])
+        state["workout_result"] = workout_state.get("workout_result")
+
+    # 合并 pending_stats
+    if food_state.get("pending_stats") and workout_state.get("pending_stats"):
+        state["pending_stats"] = {
+            "type": "multi",
+            "food": food_state["pending_stats"].get("data"),
+            "workout": workout_state["pending_stats"].get("data"),
+            "responses": [food_state["pending_stats"].get("response"), workout_state["pending_stats"].get("response")]
+        }
+    elif food_state.get("pending_stats"):
+        state["pending_stats"] = food_state["pending_stats"]
+    elif workout_state.get("pending_stats"):
+        state["pending_stats"] = workout_state["pending_stats"]
+
+    if state.get("pending_stats"):
+        get_memory_agent().save_pending_stats(state["pending_stats"])
+
+    state["response"] = "\n\n".join(responses) if responses else "已处理您的请求。"
+
+
+def _handle_food_stats_concurrent(state: AgentState, intents: list):
+    """并发处理 food + stats_query"""
+    print(f"[multi_intent_node] 并发执行 food_node 和 stats_query")
+
+    router_agent = RouterAgent()
+    food_agent = FoodAgent()
+
+    food_state = dict(state)
+    stats_state = dict(state)
+    if "food_report" in intents:
+        food_state["intent"] = "food_report"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        food_future = executor.submit(food_agent.run, food_state)
+        stats_future = executor.submit(router_agent.handle_stats_query, stats_state)
+        food_result_state = food_future.result()
+        stats_result_state = stats_future.result()
+
+    responses = []
+    if food_result_state.get("response"):
+        responses.append(food_result_state["response"])
+    if stats_result_state.get("response"):
+        responses.append(stats_result_state["response"])
+
+    state["pending_stats"] = food_result_state.get("pending_stats")
+    state["response"] = "\n\n".join(responses) if responses else "已处理您的请求。"
+    state["messages"] = food_result_state.get("messages", state.get("messages", []))
+
+
+def _handle_workout_stats_concurrent(state: AgentState, intents: list):
+    """并发处理 workout + stats_query"""
+    print(f"[multi_intent_node] 并发执行 workout_node 和 stats_query")
+
+    router_agent = RouterAgent()
+    workout_agent = WorkoutAgent()
+
+    workout_state = dict(state)
+    stats_state = dict(state)
+    if "workout_report" in intents:
+        workout_state["intent"] = "workout_report"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        workout_future = executor.submit(workout_agent.run, workout_state)
+        stats_future = executor.submit(router_agent.handle_stats_query, stats_state)
+        workout_result_state = workout_future.result()
+        stats_result_state = stats_future.result()
+
+    responses = []
+    if workout_result_state.get("response"):
+        responses.append(workout_result_state["response"])
+    if stats_result_state.get("response"):
+        responses.append(stats_result_state["response"])
+
+    state["pending_stats"] = workout_result_state.get("pending_stats")
+    state["response"] = "\n\n".join(responses) if responses else "已处理您的请求。"
+    state["messages"] = workout_result_state.get("messages", state.get("messages", []))
+
+
+def _handle_single_intent(state: AgentState, intent: str, intents: list):
+    """处理单一意图（food 或 workout）"""
+    print(f"[multi_intent_node] 仅执行 {intent}_node")
+    if intent == "food":
+        FoodAgent().run(state)
+    else:
+        WorkoutAgent().run(state)
 
 
 def create_workflow(checkpointer=None):

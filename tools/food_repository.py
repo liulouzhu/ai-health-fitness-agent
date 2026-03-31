@@ -3,7 +3,6 @@
 Provides simple fuzzy matching via alias lookup.
 """
 
-import re
 from typing import Optional
 from tools.db import get_cursor
 

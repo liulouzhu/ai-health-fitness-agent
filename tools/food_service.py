@@ -7,11 +7,23 @@ Handles:
 - Macros estimation via LLM when DB only has calories
 """
 
+import json
 import re
 from typing import Optional
 
 from tools.db import ensure_tables
 from tools.food_repository import find_food_by_alias, find_foods_by_name
+
+
+def _extract_json_from_llm(content: str) -> Optional[dict]:
+    """从 LLM 返回文本中提取 JSON，共享给 FoodAgent 和 FoodService."""
+    try:
+        match = re.search(r'\{[^}]+\}', content)
+        if match:
+            return json.loads(match.group())
+    except Exception:
+        pass
+    return None
 
 
 # Unit → grams conversion (common Chinese dietary units)
@@ -93,7 +105,7 @@ def _parse_quantity(text: str) -> tuple[Optional[float], Optional[str], str]:
         return grams, "g", food
 
     # Pattern: "X个Y" or "X碗Y" (quantity + informal unit + food)
-    pattern3 = r'^([零一二三四五六七八九十两半]+)\s*([个碗杯盘份只根块只条把]+)\s*(.+)$'
+    pattern3 = r'^([零一二三四五六七八九十两半]+)\s*([个碗杯盘份只根块条把]+)\s*(.+)$'
     m3 = re.match(pattern3, text)
     if m3:
         qty_str = m3.group(1)
@@ -164,13 +176,22 @@ class FoodNutritionService:
             nutrition_dict keys: name, calories, protein, fat, carbs
             had_macros_in_db: True if protein/fat/carbs came from DB (not LLM fill)
         """
-        grams, unit, food_name = _parse_quantity(user_input)
+        grams, _, food_name = _parse_quantity(user_input)
         if grams is None:
             grams = 100.0  # default to 100g
 
         food_name_clean = re.sub(r'[的与和配一起等]+$', '', food_name).strip()
         if not food_name_clean:
             food_name_clean = food_name
+
+        # Strip common Chinese eating verb prefixes that confuse DB lookup.
+        # e.g. "我吃了一个鸡蛋" -> "鸡蛋"; "吃了点米饭" -> "米饭"; "我喝了一杯牛奶" -> "牛奶"
+        food_name_clean = re.sub(r'^(我?(?:吃|喝)(?:了)?(?:点?)?)', '', food_name_clean)
+
+        # Strip leading Chinese numerators + measure words left in the food name
+        # (e.g. "一个鸡蛋" -> "鸡蛋", "两根香蕉" -> "香蕉", "半斤牛肉" -> "牛肉")
+        # Also handles bare numerals like "2个鸡蛋" -> "鸡蛋"
+        food_name_clean = re.sub(r'^[零一二两三四五六七八九十0-9个只根碗杯盘份块条把半]+', '', food_name_clean).strip()
 
         print(f"[FoodService] lookup: input={user_input!r}, parsed_grams={grams}, food={food_name_clean!r}")
 
@@ -224,10 +245,8 @@ class FoodNutritionService:
 
         try:
             response = self.llm.invoke([{"role": "user", "content": prompt}])
-            import json as _json, re as _re
-            match = _re.search(r'\{[^}]+\}', response.content)
-            if match:
-                data = _json.loads(match.group())
+            data = _extract_json_from_llm(response.content)
+            if data:
                 name = data.get("name", food_name)
                 return {
                     "name": name,

@@ -56,7 +56,6 @@ def ensure_tables():
     Uses IF NOT EXISTS so it's safe to call multiple times.
     """
     with get_cursor() as cur:
-        # foods table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS foods (
                 id SERIAL PRIMARY KEY,
@@ -70,22 +69,16 @@ def ensure_tables():
                 carbs_per_100g FLOAT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            );
 
-        # food_aliases table
-        cur.execute("""
             CREATE TABLE IF NOT EXISTS food_aliases (
                 id SERIAL PRIMARY KEY,
                 food_id INTEGER NOT NULL REFERENCES foods(id) ON DELETE CASCADE,
                 alias VARCHAR(200) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(food_id, alias)
-            )
-        """)
+            );
 
-        # food_portions table
-        cur.execute("""
             CREATE TABLE IF NOT EXISTS food_portions (
                 id SERIAL PRIMARY KEY,
                 food_id INTEGER NOT NULL REFERENCES foods(id) ON DELETE CASCADE,
@@ -94,19 +87,13 @@ def ensure_tables():
                 calories_per_portion FLOAT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(food_id, portion_name)
-            )
-        """)
+            );
 
-        # Simple index for fuzzy matching on aliases
-        cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_food_aliases_alias
-            ON food_aliases USING gin(to_tsvector('simple', alias))
-        """)
+                ON food_aliases USING gin(to_tsvector('simple', alias));
 
-        # Index on foods.name for quick lookup
-        cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_foods_name
-            ON foods(name)
+                ON foods(name);
         """)
 
         print("[DB] Tables ensured: foods, food_aliases, food_portions")

@@ -3,7 +3,7 @@ from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
 from agent.context_manager import get_context_manager
-from tools.food_service import get_food_service
+from tools.food_service import get_food_service, _extract_json_from_llm
 
 
 class FoodAgent:
@@ -12,7 +12,6 @@ class FoodAgent:
         self.memory_agent = get_memory_agent()
 
     def _extract_nutrition(self, food_description: str) -> dict:
-        """从食物描述中提取营养数据"""
         try:
             prompt = f"""从以下食物描述中提取营养信息，返回JSON格式：
 食物描述：{food_description}
@@ -20,16 +19,10 @@ class FoodAgent:
 返回格式（仅返回JSON，不要其他文字）：
 {{"name": "食物名称", "calories": 热量数值, "protein": 蛋白质克数, "fat": 脂肪克数, "carbs": 碳水化合物克数}}"""
 
-            response = self.llm.invoke([
-                {"role": "user", "content": prompt}
-            ])
-
+            response = self.llm.invoke([{"role": "user", "content": prompt}])
             print(f"[FoodAgent] _extract_nutrition - response.content: {response.content}")
-
-            import json, re
-            json_match = re.search(r'\{[^}]+\}', response.content)
-            if json_match:
-                data = json.loads(json_match.group())
+            data = _extract_json_from_llm(response.content)
+            if data:
                 return {
                     "name": data.get("name", "未知食物"),
                     "calories": float(data.get("calories", 0) or 0),

@@ -3,6 +3,7 @@ from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory_agent import get_memory_agent
 from agent.context_manager import get_context_manager
+from tools.food_service import get_food_service
 
 
 class FoodAgent:
@@ -88,26 +89,47 @@ class FoodAgent:
                         ]
                     )
                 ]
+                # 图片分支：走原有 LLM 流程，不走 DB（图片中食物无法结构化匹配）
+                response = self.llm.invoke(messages)
+                print(f"[FoodAgent] 图片LLM响应长度: {len(response.content) if response.content else 0}")
+                state["food_result"] = response.content
+                nutrition = self._extract_nutrition(response.content)
+                print(f"[FoodAgent] 图片营养数据: {nutrition}")
             else:
-                # 纯文字：使用 ContextManager 统一构建（含 token 预算管理）
-                extra_sections = {
-                    "用户偏好": preferences,
-                    "今日情况": task_text,
-                }
-                messages = ctx_mgr.build_prompt_messages(
-                    "food",
-                    state,
-                    extra_sections=extra_sections,
-                )
+                # 纯文字：PostgreSQL 主查，LLM 兜底
+                food_service = get_food_service()
+                nutrition, had_macros = food_service.lookup(state["input_message"])
 
-            response = self.llm.invoke(messages)
-            print(f"[FoodAgent] LLM响应长度: {len(response.content) if response.content else 0}")
-            state["food_result"] = response.content
-
-            # 提取营养数据
-            print(f"[FoodAgent] 开始提取营养数据...")
-            nutrition = self._extract_nutrition(response.content)
-            print(f"[FoodAgent] 营养数据: {nutrition}")
+                if had_macros:
+                    # DB 已有完整宏量营养素，直接用，不调 LLM
+                    print(f"[FoodAgent] DB 直接命中（完整营养）: {nutrition}")
+                    state["food_result"] = (
+                        f"{nutrition['name']}："
+                        f"热量 {nutrition['calories']} kcal，"
+                        f"蛋白质 {nutrition['protein']}g，"
+                        f"脂肪 {nutrition['fat']}g，"
+                        f"碳水 {nutrition['carbs']}g。"
+                    )
+                else:
+                    # DB 命中但缺宏量营养素，或 DB miss，走 LLM 生成完整描述
+                    print(f"[FoodAgent] DB miss 或缺宏量营养素，使用 LLM 生成营养分析")
+                    extra_sections = {
+                        "用户偏好": preferences,
+                        "今日情况": task_text,
+                    }
+                    messages = ctx_mgr.build_prompt_messages(
+                        "food",
+                        state,
+                        extra_sections=extra_sections,
+                    )
+                    response = self.llm.invoke(messages)
+                    print(f"[FoodAgent] LLM响应长度: {len(response.content) if response.content else 0}")
+                    state["food_result"] = response.content
+                    # 用 LLM 提取的营养数据覆盖（可能更完整）
+                    llm_nutrition = self._extract_nutrition(response.content)
+                    if llm_nutrition.get("protein", 0) > 0 or llm_nutrition.get("fat", 0) > 0:
+                        nutrition = llm_nutrition
+                    print(f"[FoodAgent] 营养数据: {nutrition}")
             entry = {
                 "name": nutrition.get("name", state["input_message"][:20]),
                 "calories": nutrition.get("calories", 0),
@@ -123,17 +145,17 @@ class FoodAgent:
                 print(f"[FoodAgent] 保存完成，获取每日摘要...")
                 summary = self.memory_agent.get_daily_summary()
                 print(f"[FoodAgent] 摘要长度: {len(summary) if summary else 0}")
-                state["response"] = f"{response.content}\n\n---\n已记录。\n\n{summary}"
+                state["response"] = f"{state['food_result']}\n\n---\n已记录。\n\n{summary}"
                 state["pending_stats"] = None
                 self.memory_agent.clear_pending_stats()
             else:
                 state["pending_stats"] = {
                     "type": "meal",
                     "data": entry,
-                    "response": response.content
+                    "response": state["food_result"]
                 }
                 self.memory_agent.save_pending_stats(state["pending_stats"])
-                state["response"] = f"{response.content}\n\n---\n是否将上述食物计入今日热量统计？（是/否）"
+                state["response"] = f"{state['food_result']}\n\n---\n是否将上述食物计入今日热量统计？（是/否）"
 
         except Exception as e:
             import traceback

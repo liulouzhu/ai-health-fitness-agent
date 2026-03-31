@@ -1,10 +1,8 @@
 import sys
 sys.path.insert(0, ".")
-
 import uuid
 import base64
 from pathlib import Path
-
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,13 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
-
 from agent.graph import create_workflow, default_checkpointer
 from agent.memory_agent import get_memory_agent
 from agent.router_agent import RouterAgent
 from agent.llm import get_llm
-
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app):

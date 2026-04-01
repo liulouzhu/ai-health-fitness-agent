@@ -145,6 +145,19 @@ ai_health_fitness_agent/
 - 对话历史存储
 - 长期记忆摘要
 
+**偏好信号分类器**（`classify_preference_signal`）：
+
+每条用户消息在进入偏好缓冲前会经过轻量级规则分类器，分为四类：
+
+| 类型 | 说明 | 进入缓冲 |
+|------|------|---------|
+| `hard_preference` | 过敏、忌口、受伤、器械限制等硬约束 | ✅ |
+| `soft_preference` | 明确喜欢/不喜欢、习惯偏好 | ✅ |
+| `behavior_signal` | 持续性行为（最近总是、这周一直在…） | ✅ |
+| `noise` | 查询、确认、单次记录等 | ❌ |
+
+纯规则实现，无 LLM 调用，按优先级逐层匹配（硬偏好 → 行为信号 → 软偏好 → 噪音）。消息进入缓冲时附带 `signal_type`、`confidence`、`reason` 元数据，供后续 `consolidate_preferences` 的 LLM 做差异化权重参考。
+
 ### 上下文层
 `ContextManager` 负责：
 - 分层上下文装配（system_context / conversation_window / user_memory / task_context / retrieved_knowledge）
@@ -175,6 +188,10 @@ ai_health_fitness_agent/
 - 条件路由
 - 多意图并发执行
 - PostgreSQL / InMemory checkpointer
+
+### LangGraph 工作流图
+
+![LangGraph 工作流](graph.png)
 
 ## 快速开始
 

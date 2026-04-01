@@ -36,6 +36,102 @@
 - 主聊天区 + 右侧健康面板的信息架构
 - 包含今日统计、档案摘要、快捷操作、历史记录、图片上传入口
 
+## LangGraph 工作流架构
+
+### 核心设计原则
+
+本项目经过重构后，真正体现了 LangGraph 的编排能力，而不是"名义上用了 LangGraph，但主要控制流仍然写在 api.py 里"。
+
+### 工作流程图
+
+```
+check_profile
+    │
+    ├─ 档案不完整 ──→ general_node ──→ END
+    │
+    └─ 档案完整 ──→ init_daily_stats ──→ classify_intent
+                                                │
+                              ┌─────────────────┼─────────────────┐
+                              │                 │                 │
+                          food_generate     workout_generate   stats_node/recipe/...
+                              │                 │                 │
+                              ▼                 ▼                 ▼
+                         confirm_node ◄── requires_confirmation ─┘
+                              │
+                              ▼
+                      confirm_recovery
+                              │
+                              ▼
+                         commit_node
+                              │
+                              ▼
+                              END
+```
+
+### 多意图 Fan-out / Fan-in
+
+当用户输入包含多个意图（如"我吃了鸡胸肉，还跑了 30 分钟"）时，LangGraph 通过 `Send` API 实现真正的并行执行：
+
+```
+classify_intent ──fan-out──→ [food_branch, workout_branch]（并发执行）
+                                    │            │
+                                    └────────────┴──→ multi_join_node
+                                                      │
+                                                      ▼
+                                                     END
+```
+
+各分支独立执行，只写 `branch_results` 和 `pending_confirmation`，由 `multi_join_node` 统一合并响应。
+
+### 条件路由
+
+意图分类后，通过 `routing_func` 在图层级别决定流向：
+- 单意图 → 直接节点（food / workout / stats / recipe / general）
+- 多意图组合 → fan-out 节点
+- 特殊意图（confirm / profile_update）→ 专用节点
+
+### 确认流程（Human-in-the-Loop）
+
+确认流程基于 graph state 流转，不再依赖图外的 `pending_stats.json` 作为主流程中间态（`pending_stats.json` 仅作旧版兼容 fallback）：
+
+```
+Turn 1: classify_intent → food_generate → confirm_node（显示"是否确认？"）
+                                                              │
+                                                              ▼ END
+Turn 2: classify_intent → routing_func 检测 pending_confirmation.confirmed=None
+                           → confirm_recovery（读取"是/否"）→ commit_node → END
+```
+
+**工作原理：**
+1. `food_generate` 设置 `pending_confirmation = {action, candidate, confirmed: None}`
+2. `confirm_node` 显示确认提示，设置 `pending_confirmation.confirmed = None`
+3. 用户下一条消息触发 `classify_intent` → `intent = "confirm"`
+4. `routing_func` 检测 `pending_confirmation` 非空且 `confirmed = None` → 路由到 `confirm_recovery`
+5. `confirm_recovery` 读取用户回复，设置 `confirmed = True/False`
+6. `commit_node` 根据 `confirmed` 执行 commit 或取消
+
+**当前实现的局限性：**
+- 使用 `intent = "confirm"` 来判断用户是否在回复确认提示
+- 如果用户发送其他包含确认词的消息，可能误触发
+- 如需更严谨的 interrupt / Command(resume=...) 方式，建议升级 LangGraph 版本后实现
+
+### Checkpointer 与状态持久化
+
+- 使用 PostgreSQL checkpointer（通过 `DATABASE_URL` 环境变量配置）
+- 连接失败时自动回退到 `InMemorySaver`（重启后状态丢失，仅用于开发）
+- **会话隔离**：每个 `conversation_id`（即 LangGraph thread_id）独立状态，默认 "default"
+  - 所有 `/chat`、`/chat/stream`、`/history`、`/delete/history` 均支持 `conversation_id` 参数
+  - 不同 `conversation_id` 之间状态完全隔离，不会串线
+
+### API 与 Graph 的职责划分
+
+**改造前（问题）**：api.py 中大量手写 if/else 路由、ThreadPoolExecutor 并发、手动 update_state。
+
+**改造后**：
+- `api.py`：只负责接收请求、调用 `graph.invoke()`/`graph.astream()`、转 JSON/SSE
+- `graph.py`：所有业务路由、并发、状态流转、确认 commit 全部在图内表达
+- 节点职责单一：`food_generate` 只负责食物分析和生成候选，`commit_node` 只负责写入 stats
+
 ## 适用场景
 
 - 做一个健身/饮食教练类 AI 产品原型
@@ -101,28 +197,26 @@
 ```text
 ai_health_fitness_agent/
 ├── agent/
-│   ├── food_agent.py            # 食物分析 Agent
-│   ├── graph.py                 # LangGraph 工作流与 checkpointer
-│   ├── llm.py                   # LLM 封装
+│   ├── food_agent.py            # 食物分析（graph-native，含候选生成）
+│   ├── graph.py                 # LangGraph 工作流定义、路由、checkpointer
+│   ├── multi_agent.py           # 多意图 fan-out / fan-in 节点
+│   ├── router_agent.py          # 意图分类、profile/confirm/stats 节点
+│   ├── state.py                 # AgentState 定义（candidate_meal / pending_confirmation 等）
 │   ├── memory_agent.py          # 用户档案 / 偏好 / 长期记忆 / 每日统计
 │   ├── recipe_agent.py          # 食谱推荐 Agent
-│   ├── router_agent.py          # 意图识别、上下文判断、统计查询、确认逻辑
-│   ├── state.py                 # AgentState 定义
-│   └── workout_agent.py         # 健身指导 Agent
+│   ├── workout_agent.py          # 健身指导 Agent
+│   └── context_manager.py       # 统一上下文装配与 token 预算管理
 ├── frontend/                    # React + Vite 前端
-│   ├── src/
-│   ├── public/
-│   └── package.json
 ├── knowledge/                   # 知识库与索引构建脚本
 ├── memory/                      # 用户档案、历史、偏好、每日统计
 ├── tools/
 │   ├── retriever.py             # 混合检索
 │   └── search_with_tavily.py    # Tavily 搜索
 ├── uploads/images/              # 上传图片存储目录
-├── api.py                       # FastAPI 应用入口
+├── api.py                       # FastAPI 应用入口（graph-native：只调用 graph）
 ├── config.py                    # 配置项
 ├── requirements.txt             # Python 依赖
-└── index.html                   # 早期静态原型页（当前推荐使用 frontend/）
+└── index.html                   # 早期静态原型页（推荐使用 frontend/）
 ```
 
 ## 系统架构
@@ -184,10 +278,26 @@ ai_health_fitness_agent/
 - 当本地检索不足时，可调用 Tavily 搜索增强
 
 ### 编排层
-`graph.py` 使用 LangGraph 将各节点串成完整工作流，并支持：
-- 条件路由
-- 多意图并发执行
-- PostgreSQL / InMemory checkpointer
+`graph.py` 是整个应用的核心编排中心，通过 LangGraph 表达：
+- **条件路由**：`routing_func` 根据 `intents` 列表决定节点流向
+- **多意图 Fan-out**：`Send` API 实现真正的并行执行
+- **确认流程**：基于 graph state 的 `pending_confirmation` / `requires_confirmation` 流转
+- **Checkpoint 持久化**：PostgreSQL / InMemory checkpointer，支持服务重启后恢复状态
+
+### 节点职责（单一职责）
+
+| 节点 | 职责 |
+|------|------|
+| `check_profile` | 检查用户档案是否完整 |
+| `classify_intent` | LLM 意图分类，填充 `intent` / `intents` |
+| `food_generate` | 食物检索/LLM分析 → 生成候选 `candidate_meal` |
+| `workout_generate` | 训练检索/LLM指导 → 生成候选 `candidate_workout` |
+| `confirm_node` | 展示待确认内容，设置 `pending_confirmation` |
+| `confirm_recovery` | 处理用户对确认提示的回复（"是/否"） |
+| `commit_node` | 将确认后的记录写入 `daily_stats`（唯一写入口） |
+| `multi_join_node` | 合并 fan-out 各分支的 `branch_results` |
+| `stats_node` / `recipe_node` / `general_node` | 统计查询/食谱推荐/通用对话 |
+| `food_branch` / `workout_branch` / `stats_branch` | fan-out 中的并行分支（由 Send 调度） |
 
 ### LangGraph 工作流图
 
@@ -290,14 +400,30 @@ localhost:6333
 ```json
 {
   "message": "我今天吃了鸡胸肉和米饭，还跑了 30 分钟",
-  "image_url": null
+  "image_url": null,
+  "conversation_id": "user-123-sessions"  // 可选，默认为 "default"
 }
 ```
 
-返回为 SSE 数据流：
-- 第一段可能返回 `intent`
-- 后续逐 token 输出文本
-- 结束标记为 `[DONE]`
+返回为 SSE 数据流，包含结构化事件：
+- `{"type": "session", "thread_id": "..."}` - 会话标识
+- `{"type": "intent", "intent": "..."}` - 初始意图分类
+- `{"type": "confirm_pending", "action": "..."}` - 待确认状态（如果前序消息有未完成确认）
+- `{"type": "node", "node": "..."}` - 执行到的节点（体现 graph 执行路径）
+- `{"type": "commit", "result": "confirmed"|"cancelled"}` - 确认提交结果
+- `{"type": "text", "content": "..."}` - 逐字符文本输出
+- `[DONE]` - 结束标记
+
+### `POST /chat`
+
+请求体格式同 `/chat/stream`，返回结构化 JSON：
+```json
+{
+  "response": "...",
+  "intent": "...",
+  "thread_id": "..."
+}
+```
 
 ### `POST /upload-image`
 

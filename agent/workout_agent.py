@@ -1,3 +1,13 @@
+"""
+运动 Agent
+
+职责（graph-native 改造后）：
+- 输入解析与运动信息提取
+- 生成候选记录 candidate_workout
+- 设置 pending_action / requires_confirmation
+- 由 graph 的 confirm_node → commit_node 完成实际写入
+"""
+
 from pydantic import BaseModel
 from agent.llm import get_llm
 from agent.state import AgentState
@@ -35,7 +45,7 @@ class WorkoutAgent:
             results = self.hybrid_retriever.retrieve(query)
             return results
         except Exception as e:
-            print(f"Qdrant检索失败: {e}")
+            print(f"[WorkoutAgent] Qdrant检索失败: {e}")
             return []
 
     def _extract_workout_info(self, user_input: str) -> dict:
@@ -60,30 +70,40 @@ class WorkoutAgent:
         return {"type": "未知运动", "duration": 0, "calories": 0}
 
     def run(self, state: AgentState) -> AgentState:
-        """执行健身指导"""
-        print(f"[WorkoutAgent] run - 开始健身指导")
+        """执行健身指导（graph-native 版本）
+
+        流程：
+        1. 检索
+        2. LLM 生成指导
+        3. 提取运动信息
+        4. 生成候选记录 candidate_workout
+        5. 设置 pending_action / requires_confirmation
+        6. 写入 workout_result + final_response
+
+        实际 commit 由 graph 的 commit_node 负责。
+        """
         is_user_reporting = state.get("intent") == "workout_report"
+        print(f"[WorkoutAgent] run - is_user_reporting={is_user_reporting}, intent={state.get('intent')}")
+
         try:
             query = state["input_message"]
             ctx_mgr = get_context_manager()
 
-            # 1. 检索：先从向量数据库
+            # === Step 1: 检索 ===
             retrieved_results = self.retrieve_from_qdrant(query)
             retrieved_content = "\n".join([r.text for r in retrieved_results]) if retrieved_results else ""
 
-            # 2. 判断检索是否足够，不足则联网补充
             if not check_retrieval(retrieved_content, query=query, domain="workout"):
                 tavily_content = search_with_tavily(query)
                 if tavily_content:
                     retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"
 
-            # 3. 通过统一上下文接口获取偏好和 task_context
+            # === Step 2: LLM 生成 ===
             preferences = ctx_mgr.get_preferences_str()
             if not preferences:
                 preferences = "（暂无偏好记录）"
             task_text = ctx_mgr.format_task_context("workout")
 
-            # 4. 使用 ContextManager 统一构建消息（含 token 预算管理）
             extra_sections = {
                 "用户偏好": preferences,
                 "用户情况": task_text,
@@ -94,37 +114,58 @@ class WorkoutAgent:
                 state,
                 extra_sections=extra_sections,
             )
-
             response = self.llm.invoke(messages)
             state["workout_result"] = response.content
 
-            # 尝试提取运动信息
+            # === Step 3: 提取运动数据 ===
             workout_info = self._extract_workout_info(query)
+            state["candidate_workout"] = workout_info
 
-            # 判断是否是用户主动报告（直接记录）还是询问（需要确认）
+            # === Step 4: 设置 pending_action ===
+            # confirmed=True → commit_node 直接 commit（workout_report）
+            # confirmed=None → confirm_node 询问用户
             if is_user_reporting and (workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0):
-                self.memory_agent.update_daily_stats("workout", workout_info)
-                summary = self.memory_agent.get_daily_summary()
-                state["response"] = f"{response.content}\n\n---\n已记录。\n\n{summary}"
-                state["pending_stats"] = None
-                self.memory_agent.clear_pending_stats()
-            elif workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0:
-                state["pending_stats"] = {
-                    "type": "workout",
-                    "data": workout_info,
-                    "response": response.content
+                state["pending_action"] = "log_workout"
+                state["requires_confirmation"] = True
+                state["pending_confirmation"] = {
+                    "action": "log_workout",
+                    "candidate_meal": None,
+                    "candidate_workout": workout_info,
+                    "analysis_text": response.content,
+                    "confirmed": True,
                 }
-                self.memory_agent.save_pending_stats(state["pending_stats"])
-                state["response"] = f"{response.content}\n\n---\n是否将上述运动计入今日消耗统计？（是/否）"
-            else:
+                state["final_response"] = (
+                    f"{response.content}\n\n---\n"
+                    f"（已提交，等待确认...）"
+                )
+                state["response"] = state["final_response"]
+            elif workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0:
+                state["pending_action"] = "log_workout"
+                state["requires_confirmation"] = True
+                state["pending_confirmation"] = {
+                    "action": "log_workout",
+                    "candidate_meal": None,
+                    "candidate_workout": workout_info,
+                    "analysis_text": response.content,
+                    "confirmed": None,
+                }
+                state["final_response"] = response.content
                 state["response"] = response.content
+            else:
+                state["pending_action"] = None
+                state["requires_confirmation"] = False
+                state["final_response"] = response.content
+                state["response"] = state["final_response"]
 
         except Exception as e:
             print(f"[WorkoutAgent] 错误: {e}")
             state["response"] = "抱歉，健身指导服务暂时不可用，请稍后重试。"
             state["workout_result"] = None
-            state["pending_stats"] = None
+            state["candidate_workout"] = None
+            state["pending_action"] = None
+            state["requires_confirmation"] = False
 
-        # 更新对话历史（使用 ContextManager 统一管理滑动窗口）
+        # 更新对话历史
+        ctx_mgr = get_context_manager()
         ctx_mgr.append_messages(state, state["input_message"], state.get("response", ""))
         return state

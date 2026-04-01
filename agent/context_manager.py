@@ -459,7 +459,9 @@ class ContextManager:
         elif intent == "stats_query":
             return self._build_stats_context()
         elif intent == "confirm":
-            return {"pending_stats": self.memory.load_pending_stats()}
+            # 确认意图的上下文数据由 graph state 中的 pending_confirmation 提供，
+            # 不再从 pending_stats.json 读取（该文件仅作旧版兼容 fallback）
+            return {}
         return {}
 
     def _build_food_context(self) -> Dict:
@@ -525,9 +527,11 @@ class ContextManager:
             parts.extend(self._fmt_workout_prefs(task_context.get("workout_preferences", {})))
 
         elif intent == "confirm":
-            pending = task_context.get("pending_stats")
-            if pending:
-                parts.append(_format_pending_stats(pending))
+            # 注意：确认流程的真实数据来自 graph state 的 pending_confirmation，
+            # 不再依赖 pending_stats.json。如果 task_context 中有 pending_confirmation
+            # 的相关信息（由调用方注入），会由其他分支处理。
+            # pending_stats.json 作为旧版兼容 fallback，不作为主流程数据源。
+            pass
 
         return "\n".join(parts)
 

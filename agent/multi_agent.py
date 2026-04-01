@@ -1,132 +1,196 @@
-"""多意图并发处理节点
+"""
+多意图并发处理节点
 
-每个意图组合对应独立节点，通过 LangGraph Send API 实现原生并行：
-- food_workout_node: 并发执行 food + workout
-- food_stats_node: 并发执行 food + stats_query
-- workout_stats_node: 并发执行 workout + stats_query
+使用 LangGraph Send API 实现真正的 fan-out / fan-in：
+- fan-out 节点通过 Send 调度（由 routing_func 在 conditional_edges 中返回 Send）
+- 各分支写自己专属的字段（food_branch_result / workout_branch_result / stats_branch_result）
+- 各分支的 pending 上下文也写自己专属字段（food_pending_conf / workout_pending_conf）
+- multi_join_node 读取分支专属字段，合成统一确认上下文
 
-并行节点只写 xxx_result 字段（不写 response），multi_join_node 负责合并生成最终响应。
+节点职责：
+- food_workout_fanout: food + workout 并行 → join
+- food_stats_fanout: food + stats_query 并行 → join
+- workout_stats_fanout: workout + stats_query 并行 → join
+- multi_join_node: 读取各分支结果 + pending_conf → 合成 final_response + 统一 pending_confirmation
 """
 
+from langgraph.types import Send, Command
 from agent.state import AgentState
 from agent.food_agent import FoodAgent
 from agent.workout_agent import WorkoutAgent
 from agent.memory_agent import get_memory_agent
 
+# ============ 共享工具 ============
 
-# ============ 辅助函数 ============
+_CLEARED_FIELDS = (
+    "food_branch_result", "workout_branch_result", "stats_branch_result",
+    "food_pending_conf", "workout_pending_conf",
+    "branch_results", "food_result", "workout_result", "stats_result",
+    "candidate_meal", "candidate_workout",
+    "pending_confirmation", "pending_action", "requires_confirmation", "pending_stats",
+)
 
-def _save_pending_if_exists(state: AgentState) -> None:
-    """如有 pending_stats 则持久化"""
-    pending = state.get("pending_stats")
-    if pending:
-        get_memory_agent().save_pending_stats(pending)
+
+def _clear_state(state: dict) -> dict:
+    """清除分支残留字段，避免并发写入冲突"""
+    for key in _CLEARED_FIELDS:
+        state.pop(key, None)
+    return state
 
 
-# ============ 并行执行节点（通过 Send 调用）============
+# ============ Fan-out 构建器 ============
 
-def food_workout_node(state: AgentState) -> AgentState:
-    """并发执行 food + workout，通过 Send fan-out 由 LangGraph 调度"""
-    intents = state.get("intents", [state.get("intent", "general")])
+def _make_fanout(fanout_name: str, branch_mapping: list):
+    """
+    通用 fan-out 工厂。
 
+    branch_mapping: list of (branch_name, intent_filter) tuples
+        e.g. [("food_branch", ["food", "food_report"]), ("workout_branch", ["workout", "workout_report"])]
+    """
+    def fanout(state: AgentState) -> Command:
+        state["route_decision"] = fanout_name
+        intents = state.get("intents", [state.get("intent", "general")])
+        print(f"[Fanout] {fanout_name} - intents={intents}")
+
+        sends = []
+        for branch_name, intent_filter in branch_mapping:
+            filtered = [i for i in intents if i in intent_filter]
+            if filtered:
+                branch_state = _clear_state(dict(state))
+                branch_state["intent"] = filtered[0]
+                sends.append(Send(branch_name, branch_state))
+        return Command(goto=sends)
+
+    return fanout
+
+
+# ============ 分支节点 ============
+
+def food_branch(state: AgentState) -> AgentState:
+    """Food 分支节点（由 Send 并发调度）"""
+    print(f"[Branch] food_branch 开始")
     food_agent = FoodAgent()
-    food_state = dict(state)
-    if "food_report" in intents:
-        food_state["intent"] = "food_report"
-    food_agent.run(food_state)
+    state = food_agent.run(state)
+    return {
+        "food_branch_result": state.get("food_result", ""),
+        "food_pending_conf": state.get("pending_confirmation"),
+    }
 
+
+def workout_branch(state: AgentState) -> AgentState:
+    """Workout 分支节点（由 Send 并发调度）"""
+    print(f"[Branch] workout_branch 开始")
     workout_agent = WorkoutAgent()
-    workout_state = dict(state)
-    if "workout_report" in intents:
-        workout_state["intent"] = "workout_report"
-    workout_agent.run(workout_state)
-
-    state["food_result"] = food_state.get("food_result")
-    state["workout_result"] = workout_state.get("workout_result")
-    state["pending_stats"] = workout_state.get("pending_stats") or food_state.get("pending_stats")
-    state["messages"] = food_state.get("messages", []) + workout_state.get("messages", [])
-
-    _save_pending_if_exists(state)
-    return state
+    state = workout_agent.run(state)
+    return {
+        "workout_branch_result": state.get("workout_result", ""),
+        "workout_pending_conf": state.get("pending_confirmation"),
+    }
 
 
-def food_stats_node(state: AgentState) -> AgentState:
-    """并发执行 food + stats_query，通过 Send fan-out 由 LangGraph 调度"""
-    intents = state.get("intents", [state.get("intent", "general")])
-
-    food_agent = FoodAgent()
-    food_state = dict(state)
-    if "food_report" in intents:
-        food_state["intent"] = "food_report"
-    food_agent.run(food_state)
-
-    stats_state = dict(state)
-    stats_state["response"] = get_memory_agent().get_daily_summary()
-
-    state["food_result"] = food_state.get("food_result")
-    state["stats_result"] = stats_state.get("response")
-    state["pending_stats"] = food_state.get("pending_stats")
-    state["messages"] = food_state.get("messages", []) + stats_state.get("messages", [])
-
-    _save_pending_if_exists(state)
-    return state
+def stats_branch(state: AgentState) -> AgentState:
+    """Stats 分支节点"""
+    print(f"[Branch] stats_branch 开始")
+    memory_agent = get_memory_agent()
+    summary = memory_agent.get_daily_summary()
+    return {
+        "stats_branch_result": summary,
+        "stats_result": summary,
+    }
 
 
-def workout_stats_node(state: AgentState) -> AgentState:
-    """并发执行 workout + stats_query，通过 Send fan-out 由 LangGraph 调度"""
-    intents = state.get("intents", [state.get("intent", "general")])
+# ============ 具体 fan-out 实例 ============
 
-    workout_agent = WorkoutAgent()
-    workout_state = dict(state)
-    if "workout_report" in intents:
-        workout_state["intent"] = "workout_report"
-    workout_agent.run(workout_state)
+food_workout_fanout = _make_fanout(
+    "food_workout_fanout",
+    [("food_branch", ["food", "food_report"]), ("workout_branch", ["workout", "workout_report"])],
+)
 
-    stats_state = dict(state)
-    stats_state["response"] = get_memory_agent().get_daily_summary()
+food_stats_fanout = _make_fanout(
+    "food_stats_fanout",
+    [("food_branch", ["food", "food_report"]), ("stats_branch", ["stats_query"])],
+)
 
-    state["workout_result"] = workout_state.get("workout_result")
-    state["stats_result"] = stats_state.get("response")
-    state["pending_stats"] = workout_state.get("pending_stats")
-    state["messages"] = workout_state.get("messages", []) + stats_state.get("messages", [])
-
-    _save_pending_if_exists(state)
-    return state
+workout_stats_fanout = _make_fanout(
+    "workout_stats_fanout",
+    [("workout_branch", ["workout", "workout_report"]), ("stats_branch", ["stats_query"])],
+)
 
 
 # ============ 汇合节点 ============
 
-def _merge_responses_structured(results: dict) -> str:
-    """结构化合并多意图响应"""
-    sections = []
-
-    if results.get("food"):
-        sections.append("**食物记录**\n" + results["food"])
-
-    if results.get("workout"):
-        sections.append("**运动记录**\n" + results["workout"])
-
-    if results.get("stats"):
-        sections.append("**今日统计**\n" + results["stats"])
-
-    return "\n\n".join(sections) if sections else "已处理您的请求。"
-
-
 def multi_join_node(state: AgentState) -> AgentState:
-    """多意图并行执行后的汇合节点"""
-    results = {}
-    if state.get("food_result"):
-        results["food"] = state["food_result"]
-    if state.get("workout_result"):
-        results["workout"] = state["workout_result"]
-    if state.get("stats_result"):
-        results["stats"] = state["stats_result"]
+    """
+    多意图 fan-out 后的汇合节点。
 
-    state["response"] = _merge_responses_structured(results)
+    从分支专属字段读取各分支结果：
+    - food_branch_result / workout_branch_result / stats_branch_result
+    - food_pending_conf / workout_pending_conf
 
-    # 清理各 result 字段，避免污染下游
-    state.pop("food_result", None)
-    state.pop("workout_result", None)
-    state.pop("stats_result", None)
+    生成最终响应和统一的 pending_confirmation（用于 confirm 流程）。
+    """
+    state["route_decision"] = "multi_join_node"
+    food_result = state.get("food_branch_result", "")
+    workout_result = state.get("workout_branch_result", "")
+    stats_result = state.get("stats_branch_result", "")
+    food_conf = state.get("food_pending_conf") or {}
+    workout_conf = state.get("workout_pending_conf") or {}
 
+    print(f"[Join] multi_join_node - food_result={bool(food_result)}, "
+          f"workout_result={bool(workout_result)}, stats_result={bool(stats_result)}")
+    print(f"[Join] food_pending_conf={bool(food_conf)}, workout_pending_conf={bool(workout_conf)}")
+
+    # 合并各分支响应
+    sections = []
+    if food_result:
+        sections.append(f"**食物记录**\n{food_result}")
+    if workout_result:
+        sections.append(f"**运动记录**\n{workout_result}")
+    if stats_result:
+        sections.append(f"**今日统计**\n{stats_result}")
+
+    state["final_response"] = "\n\n".join(sections) if sections else "已处理您的请求。"
+    state["response"] = state["final_response"]
+
+    # 确定 pending_confirmation
+    unified_conf = None
+    pending_action = None
+
+    has_food = bool(food_conf.get("action"))
+    has_workout = bool(workout_conf.get("action"))
+
+    if has_food and has_workout:
+        unified_conf = {
+            "action": "log_both",
+            "candidate_meal": food_conf.get("candidate_meal"),
+            "candidate_workout": workout_conf.get("candidate_workout"),
+            "analysis_text": f"{food_conf.get('analysis_text', '')}\n\n{workout_conf.get('analysis_text', '')}",
+            "confirmed": None,
+        }
+        pending_action = "log_both"
+    elif has_food:
+        unified_conf = food_conf
+        pending_action = "log_meal"
+    elif has_workout:
+        unified_conf = workout_conf
+        pending_action = "log_workout"
+
+    if unified_conf and pending_action:
+        state["pending_confirmation"] = unified_conf
+        state["pending_action"] = pending_action
+        state["requires_confirmation"] = True
+        state["final_response"] += (
+            f"\n\n---\n"
+            f"是否将上述记录计入今日统计？（是/否）"
+        )
+        state["response"] = state["final_response"]
+
+    # 清理分支结果字段
+    for key in (
+        "food_branch_result", "workout_branch_result", "stats_branch_result",
+        "food_pending_conf", "workout_pending_conf",
+        "food_result", "workout_result", "stats_result", "recipe_result",
+        "candidate_meal", "candidate_workout",
+    ):
+        state.pop(key, None)
     return state

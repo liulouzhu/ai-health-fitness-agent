@@ -113,6 +113,7 @@ class RecipeAgent:
 
             response = self.llm.invoke(messages)
             state["response"] = response.content
+            state["final_response"] = response.content
 
         except Exception as e:
             print(f"[RecipeAgent] 错误: {e}")

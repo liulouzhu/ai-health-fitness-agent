@@ -17,6 +17,7 @@ class RouterAgent:
     def check_profile(self, state: AgentState) -> AgentState:
         """检查用户档案是否完整"""
         print(f"[Router] check_profile - 检查用户档案是否完整")
+        state["route_decision"] = "check_profile"
         if self.memory_agent.is_profile_complete():
             state["profile_complete"] = True
             print(f"[Router] check_profile - 档案完整")
@@ -29,6 +30,7 @@ class RouterAgent:
     def classify_intent(self, state: AgentState) -> AgentState:
         """意图分类node"""
         print(f"[Router] classify_intent - 开始意图分类")
+        state["route_decision"] = "classify_intent"
         try:
             print(f"[Router] classify_intent - 用户输入: {state.get('input_message', '')[:50]}...")
 
@@ -162,45 +164,44 @@ class RouterAgent:
             else:
                 state["response"] = result.get("message", "未检测到档案变化")
 
+        state["final_response"] = state["response"]
         return state
 
     def handle_confirm(self, state: AgentState) -> AgentState:
-        """处理确认回答"""
+        """处理确认回答（兼容旧接口，优先使用 state 中的 pending_confirmation）
+
+        新流程：graph 的 confirm_node → commit_node 负责实际的 commit 逻辑，
+        这个方法主要用于从旧版 pending_stats.json 恢复兼容的情况。
+        """
         print(f"[Router] handle_confirm - 处理确认")
         user_input = state.get("input_message", "").strip().lower()
 
-        # 优先从临时文件加载待确认数据
+        # 优先从 state 中的 pending_confirmation 读取
+        pending_conf = state.get("pending_confirmation") or {}
         pending = self.memory_agent.load_pending_stats()
 
-        if not pending:
-            # 没有待确认的数据
+        if not pending_conf and not pending:
             state["response"] = "没有待确认的记录，请先查询食物或运动信息。"
             return state
 
-        # 判断是肯定还是否定（优先检查否定词，防止"不算"/"不计入"等部分匹配）
+        # 判断是肯定还是否定
         is_deny = any(word == user_input for word in DENY_WORDS)
         is_yes = not is_deny and any(word in user_input for word in CONFIRM_WORDS)
 
         if is_yes:
-            # 保存统计（支持 multi 类型：同时保存 food 和 workout）
             if pending.get("type") == "multi":
                 if pending.get("food"):
                     self.memory_agent.update_daily_stats("meal", pending["food"])
                 if pending.get("workout"):
                     self.memory_agent.update_daily_stats("workout", pending["workout"])
                 state["response"] = "已计入统计（食物+运动）。\n\n" + self.memory_agent.get_daily_summary()
-                print(f"[Router] handle_confirm - 用户确认，已计入 food + workout")
             else:
                 self.memory_agent.update_daily_stats(pending["type"], pending["data"])
                 summary = self.memory_agent.get_daily_summary()
                 state["response"] = f"已计入统计。\n\n{summary}"
-                print(f"[Router] handle_confirm - 用户确认，已计入统计")
         else:
-            # 取消
             state["response"] = f"好的，已取消。"
-            print(f"[Router] handle_confirm - 用户取消")
 
-        # 清除待确认数据
         self.memory_agent.clear_pending_stats()
         state["pending_stats"] = None
         return state
@@ -211,21 +212,21 @@ class RouterAgent:
         try:
             if not state.get("profile_complete", True):
                 state["response"] = self.memory_agent.get_initial_questions()
+                state["final_response"] = state["response"]
                 return state
 
             # 通过 ContextManager 统一构建消息列表
             ctx_mgr = get_context_manager()
             messages = ctx_mgr.build_prompt_messages("general", state)
 
-            # 使用 stream() 获取流式响应
-            stream_resp = self.llm.stream(messages)
             # 收集完整响应
             full_response = ""
-            for chunk in stream_resp:
+            for chunk in self.llm.stream(messages):
                 if chunk.content:
                     full_response += chunk.content
 
             state["response"] = full_response
+            state["final_response"] = full_response
 
             # 更新对话历史（使用 ContextManager 统一管理滑动窗口）
             ctx_mgr.append_messages(state, state["input_message"], full_response)
@@ -233,6 +234,7 @@ class RouterAgent:
         except Exception as e:
             print(f"[Router] handle_general 错误: {e}")
             state["response"] = "抱歉，服务暂时不可用，请稍后重试。"
+            state["final_response"] = state["response"]
         return state
 
     def handle_stats_query(self, state: AgentState) -> AgentState:
@@ -240,6 +242,7 @@ class RouterAgent:
         print(f"[Router] handle_stats_query - 处理统计查询")
         summary = self.memory_agent.get_daily_summary()
         state["response"] = summary
+        state["final_response"] = summary
         return state
 
     def _format_profile(self, profile: dict) -> str:

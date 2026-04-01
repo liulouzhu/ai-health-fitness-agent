@@ -32,6 +32,30 @@ export async function clearHistory() {
 }
 
 /**
+ * 上传图片文件，返回 image_url
+ * @param {File} file
+ * @returns {Promise<string>} imageUrl
+ */
+export async function uploadImage(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await fetch(`${API_BASE}upload-image`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: '上传失败' }));
+    throw new Error(err.detail || '上传失败');
+  }
+
+  const data = await res.json();
+  // 返回 data_url（base64格式），可直接被 LLM 多模态模型使用
+  return data.data_url;
+}
+
+/**
  * 发送聊天消息并返回 SSE 流
  * @param {string} message
  * @param {string|null} imageUrl

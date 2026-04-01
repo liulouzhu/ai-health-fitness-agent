@@ -68,7 +68,13 @@ function reducer(state, action) {
         ...state,
         messages: [
           ...state.messages,
-          { id: Date.now(), role: 'user', content: action.payload, intent: null },
+          {
+            id: Date.now(),
+            role: 'user',
+            content: action.payload.content,
+            imageUrl: action.payload.imageUrl || null,
+            intent: null
+          },
         ],
         currentIntent: null,
         streamingError: null,

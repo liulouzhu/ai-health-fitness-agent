@@ -73,11 +73,13 @@ class FoodAgent:
                 system_prompt = "\n".join(system_parts)
 
                 image_url = image_info.get("image_url", "")
+                user_message = state.get("input_message", "")
+                user_text = f"用户问题：{user_message}\n请分析这张图片中的食物营养成分。" if user_message else "请分析这张图片中的食物营养成分。"
                 messages = [
                     {"role": "system", "content": system_prompt},
                     HumanMessage(
                         content=[
-                            {"type": "text", "text": "请分析这张图片中的食物营养成分。"},
+                            {"type": "text", "text": user_text},
                             {"type": "image_url", "image_url": {"url": image_url}}
                         ]
                     )

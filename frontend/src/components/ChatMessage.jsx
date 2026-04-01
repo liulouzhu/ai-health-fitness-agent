@@ -30,7 +30,7 @@ function formatContent(text) {
     .replace(/$/, '</p>');
 }
 
-export default function ChatMessage({ role, content, intent, isStreaming = false }) {
+export default function ChatMessage({ role, content, intent, isStreaming = false, imageUrl = null }) {
   const intentConfig = intent ? INTENT_CONFIG[intent] || INTENT_CONFIG.general : null;
 
   const formattedContent = useMemo(() => formatContent(content), [content]);
@@ -39,7 +39,12 @@ export default function ChatMessage({ role, content, intent, isStreaming = false
     return (
       <div className="chat-message user">
         <div className="chat-message-bubble">
-          <p>{content}</p>
+          {imageUrl && (
+            <div className="chat-message-image">
+              <img src={imageUrl} alt="用户上传的图片" />
+            </div>
+          )}
+          {content && <p>{content}</p>}
         </div>
         <div className="chat-message-avatar user">
           <svg viewBox="0 0 20 20" fill="currentColor">

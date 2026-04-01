@@ -1,17 +1,21 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useApp } from '../store/AppContext';
-import { createChatStream, parseSSEData } from '../services/api';
+import { createChatStream, parseSSEData, uploadImage } from '../services/api';
 import ChatMessage from '../components/ChatMessage';
 import './ChatPanel.css';
 
 export default function ChatPanel() {
   const { state, dispatch, loadStats } = useApp();
   const [inputValue, setInputValue] = useState('');
-  const [imageUrlInput, setImageUrlInput] = useState('');
-  const [showImageInput, setShowImageInput] = useState(false);
+  const [imageUrl, setImageUrl] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const streamControllerRef = useRef(null);
+  const imageUrlRef = useRef(null);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -20,6 +24,11 @@ export default function ChatPanel() {
   useEffect(() => {
     scrollToBottom();
   }, [state.messages, scrollToBottom]);
+
+  // Keep imageUrlRef in sync with imageUrl state
+  useEffect(() => {
+    imageUrlRef.current = imageUrl;
+  }, [imageUrl]);
 
   // Handle quick action events from sidebar
   useEffect(() => {
@@ -31,25 +40,103 @@ export default function ChatPanel() {
     return () => window.removeEventListener('quick-action', handler);
   }, []);
 
+  // 处理图片上传
+  const handleImageUpload = useCallback(async (file) => {
+    if (!file) return;
+
+    // 验证文件类型
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      setUploadError('不支持的图片格式，请上传 JPG、PNG 或 WebP 格式');
+      return;
+    }
+
+    // 验证文件大小（限制 10MB）
+    if (file.size > 10 * 1024 * 1024) {
+      setUploadError('图片大小不能超过 10MB');
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadError(null);
+
+    try {
+      const url = await uploadImage(file);
+      setImageUrl(url);
+    } catch (err) {
+      setUploadError(err.message || '图片上传失败');
+    } finally {
+      setIsUploading(false);
+    }
+  }, []);
+
+  // 拖拽事件处理
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      handleImageUpload(files[0]);
+    }
+  }, [handleImageUpload]);
+
+  // 点击上传区域
+  const handleUploadClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  // 文件选择
+  const handleFileChange = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleImageUpload(file);
+    }
+    // 重置 input 以便再次选择相同文件
+    e.target.value = '';
+  }, [handleImageUpload]);
+
+  // 移除已上传的图片
+  const handleRemoveImage = useCallback(() => {
+    setImageUrl(null);
+    setUploadError(null);
+  }, []);
+
   const sendMessage = useCallback(async () => {
     const message = inputValue.trim();
     if (!message || state.isStreaming) return;
 
-    const imageUrl = imageUrlInput.trim() || null;
+    // Capture imageUrl at call time via ref (avoids stale closure)
+    const currentImageUrl = imageUrlRef.current;
 
-    // Add user message
-    dispatch({ type: 'CHAT_ADD_USER_MESSAGE', payload: message });
+    // Add user message with image
+    dispatch({ type: 'CHAT_ADD_USER_MESSAGE', payload: { content: message, imageUrl: currentImageUrl } });
 
     setInputValue('');
-    if (!showImageInput) setImageUrlInput('');
     inputRef.current?.focus();
 
     try {
-      const stream = createChatStream(message, imageUrl);
+      const stream = createChatStream(message, imageUrlRef.current);
       streamControllerRef.current = stream;
 
       // Start streaming state first (no message created yet)
       dispatch({ type: 'CHAT_SET_STREAMING', payload: { isStreaming: true, intent: null } });
+
+      // Clear image after sending
+      setImageUrl(null);
 
       for await (const data of stream.start()) {
         const parsed = parseSSEData(data);
@@ -79,7 +166,7 @@ export default function ChatPanel() {
       dispatch({ type: 'CHAT_STREAM_ERROR', payload: err.message });
       // Replace last empty assistant message with error
     }
-  }, [inputValue, imageUrlInput, showImageInput, state.isStreaming, dispatch, loadStats]);
+  }, [inputValue, state.isStreaming, dispatch, loadStats]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -118,6 +205,7 @@ export default function ChatPanel() {
             role={msg.role}
             content={msg.content}
             intent={msg.intent}
+            imageUrl={msg.imageUrl}
           />
         ))}
 
@@ -145,42 +233,69 @@ export default function ChatPanel() {
 
       {/* Input area */}
       <div className="chat-input-area">
-        {showImageInput && (
-          <div className="chat-image-input-row">
-            <input
-              type="text"
-              className="chat-image-input"
-              placeholder="输入图片 URL（可选）"
-              value={imageUrlInput}
-              onChange={(e) => setImageUrlInput(e.target.value)}
-            />
-            <button
-              className="chat-image-toggle"
-              onClick={() => {
-                setShowImageInput(false);
-                setImageUrlInput('');
-              }}
-            >
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M15 5L5 15M5 5l10 10" strokeLinecap="round"/>
-              </svg>
-            </button>
+        {/* 图片上传/预览区域 */}
+        {isUploading && (
+          <div className="chat-image-upload-row">
+            <div className="chat-image-uploading">
+              <span className="chat-upload-spinner" />
+              <span>图片上传中...</span>
+            </div>
           </div>
         )}
 
-        <div className="chat-input-row">
-          <button
-            className={`chat-image-toggle ${showImageInput ? 'active' : ''}`}
-            onClick={() => setShowImageInput(!showImageInput)}
-            title="添加图片"
+        {uploadError && (
+          <div className="chat-image-upload-row">
+            <div className="chat-upload-error">
+              <span>{uploadError}</span>
+              <button onClick={() => setUploadError(null)}>
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M15 5L5 15M5 5l10 10" strokeLinecap="round"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {imageUrl && !isUploading && (
+          <div className="chat-image-preview-row">
+            <div className="chat-image-preview">
+              <img src={imageUrl} alt="已上传图片" />
+              <button className="chat-image-remove" onClick={handleRemoveImage} title="移除图片">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M15 5L5 15M5 5l10 10" strokeLinecap="round"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 拖拽上传区域（未上传时显示） */}
+        {!imageUrl && !isUploading && (
+          <div
+            className={`chat-drop-zone ${isDragging ? 'dragging' : ''}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={handleUploadClick}
           >
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
               <rect x="2" y="4" width="16" height="12" rx="2"/>
               <circle cx="7" cy="8.5" r="1.5"/>
               <path d="M2 14l4-4 3 3 3-3 4 4" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
-          </button>
+            <span>{isDragging ? '松开以上传图片' : '拖拽图片或点击上传'}</span>
+          </div>
+        )}
 
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          onChange={handleFileChange}
+          style={{ display: 'none' }}
+        />
+
+        <div className="chat-input-row">
           <textarea
             ref={inputRef}
             className="chat-textarea"

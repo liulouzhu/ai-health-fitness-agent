@@ -88,12 +88,150 @@
   flex-shrink: 0;
 }
 
-.chat-image-input-row {
+/* ── 拖拽上传区域 ── */
+.chat-drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  animation: slideDown 150ms ease;
+}
+
+.chat-drop-zone svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.chat-drop-zone:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+}
+
+.chat-drop-zone.dragging {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+  transform: scale(1.01);
+}
+
+/* ── 上传中状态 ── */
+.chat-image-upload-row {
+  margin-bottom: var(--space-3);
+  animation: slideDown 150ms ease;
+}
+
+.chat-image-uploading {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-accent-bg);
+  border-radius: var(--radius-md);
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+}
+
+.chat-upload-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* ── 上传错误 ── */
+.chat-upload-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  border-radius: var(--radius-md);
+  color: var(--color-error);
+  font-size: var(--text-sm);
+}
+
+.chat-upload-error button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--color-error);
+  opacity: 0.7;
+}
+
+.chat-upload-error button:hover {
+  opacity: 1;
+}
+
+.chat-upload-error svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── 图片预览 ── */
+.chat-image-preview-row {
   margin-bottom: var(--space-3);
   animation: slideDown 150ms ease;
+}
+
+.chat-image-preview {
+  position: relative;
+  display: inline-block;
+  max-width: 200px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.chat-image-preview img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: var(--radius-md);
+}
+
+.chat-image-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.chat-image-preview:hover .chat-image-remove {
+  opacity: 1;
+}
+
+.chat-image-remove svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chat-image-remove:hover {
+  background: rgba(0, 0, 0, 0.8);
 }
 
 @keyframes slideDown {
@@ -101,19 +239,17 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.chat-image-input {
-  flex: 1;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-  background: var(--color-bg);
-  transition: border-color var(--transition-fast);
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
-.chat-image-input:focus {
-  outline: none;
-  border-color: var(--color-accent);
+/* ── 移除旧的 URL 输入框样式 ── */
+.chat-image-input-row {
+  display: none;
+}
+
+.chat-image-input {
+  display: none;
 }
 
 .chat-input-row {

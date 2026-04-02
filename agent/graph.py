@@ -11,7 +11,7 @@ from agent.multi_agent import (
     food_branch, workout_branch, stats_branch,
     multi_join_node
 )
-from agent.memory_agent import get_memory_agent
+from agent.memory import get_memory_agent
 from datetime import datetime
 import os
 
@@ -160,8 +160,9 @@ def routing_func(state: AgentState):
 
 
 def profile_check_route(state: AgentState) -> str:
-    """profile 检查后的路由"""
-    if state.get("profile_complete", False):
+    """profile 检查后的路由（直接从磁盘读取，避免 checkpointer 缓存不一致）"""
+    memory_agent = get_memory_agent()
+    if memory_agent.is_profile_complete():
         return "init_daily_stats"
     return "general_node"
 
@@ -376,7 +377,7 @@ def confirm_recovery_node(state: AgentState) -> AgentState:
     user_input = state.get("input_message", "").strip().lower()
 
     is_deny = any(word == user_input for word in DENY_WORDS)
-    is_yes = not is_deny and any(word in user_input for word in CONFIRM_WORDS)
+    is_yes = not is_deny and any(word == user_input for word in CONFIRM_WORDS)
 
     # 获取之前的 pending_confirmation
     pending_conf = dict(state.get("pending_confirmation") or {})

@@ -1,5 +1,5 @@
 from agent.llm import get_llm
-from agent.memory_agent import get_memory_agent
+from agent.memory import get_memory_agent, MemoryAgent
 from agent.state import AgentState, UserProfile, DailyStats, ImageInfo
 from agent.router_agent import RouterAgent
 from agent.food_agent import FoodAgent
@@ -15,6 +15,7 @@ __all__ = [
     "get_llm",
     # Memory
     "get_memory_agent",
+    "MemoryAgent",
     # Context
     "ContextManager",
     "get_context_manager",

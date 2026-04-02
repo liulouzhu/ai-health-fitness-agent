@@ -18,7 +18,7 @@ from langgraph.types import Send, Command
 from agent.state import AgentState
 from agent.food_agent import FoodAgent
 from agent.workout_agent import WorkoutAgent
-from agent.memory_agent import get_memory_agent
+from agent.memory import get_memory_agent
 
 # ============ 共享工具 ============
 

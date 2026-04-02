@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
 from agent.graph import create_workflow, default_checkpointer
-from agent.memory_agent import get_memory_agent
+from agent.memory import get_memory_agent
 from agent.llm import get_llm
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -198,7 +198,7 @@ def _build_graph_input(request: ChatRequest, restored_state: dict) -> dict:
         # === 对话运行时状态（继承）===
         "messages": restored_state.get("messages", []),
         "last_intent": restored_state.get("last_intent"),
-        "profile_complete": restored_state.get("profile_complete", True),
+        "profile_complete": restored_state.get("profile_complete"),
         "summary_buffer": restored_state.get("summary_buffer", []),
         "turn_count": restored_state.get("turn_count", 0),
         "last_summary_turn": restored_state.get("last_summary_turn", 0),
@@ -305,7 +305,10 @@ async def chat_stream(request: ChatRequest):
 
             # Graph 执行后的记忆处理
             import asyncio
-            asyncio.create_task(_run_post_graph_memory(result, request))
+            memory_task = asyncio.create_task(_run_post_graph_memory(result, request))
+            memory_task.add_done_callback(
+                lambda t: print(f"[Memory] 记忆处理完成: {t.result()}") if not t.cancelled() and t.exception() is None else print(f"[Memory] 记忆处理失败: {t.exception()}")
+            )
 
         except Exception as e:
             import traceback
@@ -317,7 +320,7 @@ async def chat_stream(request: ChatRequest):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _run_post_graph_memory(result_state: dict, request: ChatRequest):
+async def _run_post_graph_memory(result_state: dict, request: ChatRequest) -> str:
     """异步执行记忆处理（不阻塞 SSE 流）"""
     try:
         response_text = (
@@ -330,8 +333,10 @@ async def _run_post_graph_memory(result_state: dict, request: ChatRequest):
         memory_agent.extract_and_save_preferences(request.message)
         if memory_agent.should_summarize(result_state, threshold=10):
             memory_agent.summarize_conversations(result_state)
+        return "success"
     except Exception as e:
         print(f"[Warning] Async memory processing failed: {e}")
+        return f"error: {e}"
 
 
 @app.post("/chat")
@@ -420,8 +425,8 @@ async def create_or_update_profile(request: ProfileRequest):
 # ============ 每日统计接口 ============
 
 @app.get("/daily_stats", response_model=DailyStatsResponse)
-async def get_daily_stats():
-    stats = memory_agent.load_daily_stats()
+async def get_daily_stats(date: Optional[str] = None):
+    stats = memory_agent.load_daily_stats(date)
     profile = memory_agent.load_profile()
     target_cal = int(profile.get("target_calories", 2000))
     target_pro = int(profile.get("target_protein", 100))

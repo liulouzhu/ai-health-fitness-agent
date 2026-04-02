@@ -19,7 +19,7 @@ import logging
 from typing import Any, Dict, List, Optional, TypedDict
 
 from agent.state import AgentState
-from agent.memory_agent import get_memory_agent
+from agent.memory import get_memory_agent
 from config import AgentConfig
 
 logger = logging.getLogger(__name__)

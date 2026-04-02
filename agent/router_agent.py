@@ -1,12 +1,16 @@
 from agent.llm import get_llm
 from agent.state import AgentState
-from agent.memory_agent import get_memory_agent
+from agent.memory import get_memory_agent
 from agent.context_manager import get_context_manager
 
 INTENT_TYPES = ["food", "workout", "recipe", "stats_query", "profile_update", "confirm", "general", "food_report", "workout_report"]
 
-CONFIRM_WORDS = ["是", "好的", "记录", "yes", "确认", "计入", "算", "嗯", "ok", "okay"]
+CONFIRM_WORDS = ["是", "好的", "yes", "确认", "计入", "嗯", "ok", "okay"]
 DENY_WORDS = ["no", "取消", "不算", "不计入"]
+
+# 预计算的集合，用于快速查找
+_CONFIRM_WORDS_SET = set(CONFIRM_WORDS)
+_DENY_WORDS_SET = set(DENY_WORDS)
 
 
 class RouterAgent:
@@ -129,10 +133,11 @@ class RouterAgent:
         return None
 
     def _is_confirmation(self, user_input: str) -> bool:
-        """判断是否是确认回答"""
+        """判断是否是确认回答（精确匹配）"""
         if not user_input:
             return False
-        return len(user_input) <= 10 and any(word in user_input for word in CONFIRM_WORDS + DENY_WORDS)
+        user_input_stripped = user_input.strip().lower()
+        return user_input_stripped in _CONFIRM_WORDS_SET or user_input_stripped in _DENY_WORDS_SET
 
     def _is_user_reporting_food_or_workout(self, text: str) -> bool:
         """判断用户是否在主动报告吃食物或做运动"""
@@ -184,9 +189,9 @@ class RouterAgent:
             state["response"] = "没有待确认的记录，请先查询食物或运动信息。"
             return state
 
-        # 判断是肯定还是否定
+        # 判断是肯定还是否定（精确匹配）
         is_deny = any(word == user_input for word in DENY_WORDS)
-        is_yes = not is_deny and any(word in user_input for word in CONFIRM_WORDS)
+        is_yes = not is_deny and any(word == user_input for word in CONFIRM_WORDS)
 
         if is_yes:
             if pending.get("type") == "multi":

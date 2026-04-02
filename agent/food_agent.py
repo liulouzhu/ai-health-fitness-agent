@@ -14,7 +14,7 @@
 from langchain_core.messages import HumanMessage
 from agent.llm import get_llm
 from agent.state import AgentState
-from agent.memory_agent import get_memory_agent
+from agent.memory import get_memory_agent
 from agent.context_manager import get_context_manager, is_retrieval_sufficient as check_retrieval
 from tools.search_with_tavily import search_with_tavily
 from tools.retriever import get_hybrid_retriever

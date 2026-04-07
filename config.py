@@ -12,6 +12,7 @@ class AgentConfig:
     # LLM_MODEL = os.getenv("Ollama_MODEL")
     VLM_MODEL = os.getenv("VLM_MODEL")
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
+    RERANK_MODEL = os.getenv("RERANK_MODEL")
 
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 

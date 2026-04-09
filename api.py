@@ -176,10 +176,8 @@ def _build_graph_input(request: ChatRequest, restored_state: dict) -> dict:
     """从请求和恢复状态构造 graph 输入状态
 
     重要：以下字段是跨轮持久状态，不应被本轮输入重置，必须从 restored_state 读取：
-    - candidate_meal / candidate_workout：确认流程中的候选记录
     - pending_confirmation：确认上下文（含 confirmed 标志）
     - requires_confirmation：是否在等待确认
-    - pending_action：待确认的动作类型
 
     以下字段是本轮新的输入状态，用请求构造：
     - input_message：用户本轮输入
@@ -208,11 +206,8 @@ def _build_graph_input(request: ChatRequest, restored_state: dict) -> dict:
         # intent/intents 在图内由 classify_intent 重新设置，这里只提供 fallback
         "intent": restored_state.get("intent", "general"),
         "intents": restored_state.get("intents", []),
-        "candidate_meal": restored_state.get("candidate_meal"),
-        "candidate_workout": restored_state.get("candidate_workout"),
         "pending_confirmation": restored_state.get("pending_confirmation") or {},
         "requires_confirmation": restored_state.get("requires_confirmation", False),
-        "pending_action": restored_state.get("pending_action"),
         # === 分支结果（fan-out 用，本轮结束后图内会写入）===
         "food_branch_result": None,
         "workout_branch_result": None,
@@ -232,13 +227,21 @@ def _build_graph_input(request: ChatRequest, restored_state: dict) -> dict:
     }
 
 
-def _post_graph_memory(state: dict, request: ChatRequest) -> None:
+def _post_graph_memory(state: dict, request: ChatRequest, config: dict) -> None:
     """Graph 执行后的记忆处理（side effect，不影响主流程）"""
     try:
         memory_agent.add_conversation_turn(state, request.message, state.get("final_response") or state.get("response", ""))
         memory_agent.extract_and_save_preferences(request.message)
         if memory_agent.should_summarize(state, threshold=10):
             memory_agent.summarize_conversations(state)
+        app_obj.update_state(
+            config,
+            {
+                "summary_buffer": state.get("summary_buffer", []),
+                "turn_count": state.get("turn_count", 0),
+                "last_summary_turn": state.get("last_summary_turn", 0),
+            },
+        )
     except Exception as e:
         print(f"[Warning] Memory processing failed: {e}")
 
@@ -305,7 +308,7 @@ async def chat_stream(request: ChatRequest):
 
             # Graph 执行后的记忆处理
             import asyncio
-            memory_task = asyncio.create_task(_run_post_graph_memory(result, request))
+            memory_task = asyncio.create_task(_run_post_graph_memory(result, request, config))
             memory_task.add_done_callback(
                 lambda t: print(f"[Memory] 记忆处理完成: {t.result()}") if not t.cancelled() and t.exception() is None else print(f"[Memory] 记忆处理失败: {t.exception()}")
             )
@@ -320,7 +323,7 @@ async def chat_stream(request: ChatRequest):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _run_post_graph_memory(result_state: dict, request: ChatRequest) -> str:
+async def _run_post_graph_memory(result_state: dict, request: ChatRequest, config: dict) -> str:
     """异步执行记忆处理（不阻塞 SSE 流）"""
     try:
         response_text = (
@@ -333,6 +336,14 @@ async def _run_post_graph_memory(result_state: dict, request: ChatRequest) -> st
         memory_agent.extract_and_save_preferences(request.message)
         if memory_agent.should_summarize(result_state, threshold=10):
             memory_agent.summarize_conversations(result_state)
+        app_obj.update_state(
+            config,
+            {
+                "summary_buffer": result_state.get("summary_buffer", []),
+                "turn_count": result_state.get("turn_count", 0),
+                "last_summary_turn": result_state.get("last_summary_turn", 0),
+            },
+        )
         return "success"
     except Exception as e:
         print(f"[Warning] Async memory processing failed: {e}")
@@ -366,7 +377,7 @@ async def chat(request: ChatRequest):
         intent = result.get("intent", "general")
 
         # 记忆处理
-        _post_graph_memory(result, request)
+        _post_graph_memory(result, request, config)
 
         return {"response": response_text, "intent": intent, "thread_id": thread_id}
 

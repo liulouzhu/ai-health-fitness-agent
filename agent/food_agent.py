@@ -3,8 +3,8 @@
 
 职责（graph-native 改造后）：
 - 输入解析与营养数据提取
-- 生成候选记录 candidate_meal
-- 设置 pending_action / requires_confirmation
+- 生成候选记录（写入 pending_confirmation.candidate_meal）
+- 设置 pending_confirmation / requires_confirmation
 - 由 graph 的 confirm_node → commit_node 完成实际写入
 
 不再直接操作 memory_agent 的 save_pending_stats / update_daily_stats，
@@ -81,8 +81,8 @@ class FoodAgent:
         流程：
         1. 解析输入（图片或文字）
         2. 检索/生成营养数据
-        3. 生成候选记录 candidate_meal
-        4. 设置 pending_action + requires_confirmation
+        3. 生成候选记录（写入 pending_confirmation.candidate_meal）
+        4. 设置 pending_confirmation + requires_confirmation
         5. 写入 food_result + final_response
 
         实际 commit 由 graph 的 commit_node 负责。
@@ -180,13 +180,10 @@ class FoodAgent:
                 "fat": nutrition.get("fat", 0),
                 "carbs": nutrition.get("carbs", 0)
             }
-            state["candidate_meal"] = entry
-
-            # === Step 5: 设置 pending_action / requires_confirmation ===
+            # === Step 5: 设置确认态 ===
             # 主动报告（food_report）：confirmed=True → graph 直接路由到 commit_node 写入
             # 查询（food）：confirmed=None → graph 路由到 confirm_node 询问用户
             if is_user_reporting:
-                state["pending_action"] = "log_meal"
                 state["requires_confirmation"] = True
                 state["pending_confirmation"] = {
                     "action": "log_meal",
@@ -201,7 +198,6 @@ class FoodAgent:
                 )
                 state["response"] = state["final_response"]
             else:
-                state["pending_action"] = "log_meal"
                 state["requires_confirmation"] = True
                 state["pending_confirmation"] = {
                     "action": "log_meal",
@@ -220,8 +216,6 @@ class FoodAgent:
             traceback.print_exc()
             state["response"] = "抱歉，食物分析服务暂时不可用，请稍后重试。"
             state["food_result"] = None
-            state["candidate_meal"] = None
-            state["pending_action"] = None
             state["requires_confirmation"] = False
 
         # 更新对话历史

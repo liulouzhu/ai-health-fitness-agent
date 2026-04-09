@@ -26,8 +26,7 @@ _CLEARED_FIELDS = (
     "food_branch_result", "workout_branch_result", "stats_branch_result",
     "food_pending_conf", "workout_pending_conf",
     "branch_results", "food_result", "workout_result", "stats_result",
-    "candidate_meal", "candidate_workout",
-    "pending_confirmation", "pending_action", "requires_confirmation", "pending_stats",
+    "pending_confirmation", "requires_confirmation", "pending_stats",
 )
 
 
@@ -154,7 +153,6 @@ def multi_join_node(state: AgentState) -> AgentState:
 
     # 确定 pending_confirmation
     unified_conf = None
-    pending_action = None
 
     has_food = bool(food_conf.get("action"))
     has_workout = bool(workout_conf.get("action"))
@@ -167,17 +165,13 @@ def multi_join_node(state: AgentState) -> AgentState:
             "analysis_text": f"{food_conf.get('analysis_text', '')}\n\n{workout_conf.get('analysis_text', '')}",
             "confirmed": None,
         }
-        pending_action = "log_both"
     elif has_food:
         unified_conf = food_conf
-        pending_action = "log_meal"
     elif has_workout:
         unified_conf = workout_conf
-        pending_action = "log_workout"
 
-    if unified_conf and pending_action:
+    if unified_conf:
         state["pending_confirmation"] = unified_conf
-        state["pending_action"] = pending_action
         state["requires_confirmation"] = True
         state["final_response"] += (
             f"\n\n---\n"
@@ -190,7 +184,6 @@ def multi_join_node(state: AgentState) -> AgentState:
         "food_branch_result", "workout_branch_result", "stats_branch_result",
         "food_pending_conf", "workout_pending_conf",
         "food_result", "workout_result", "stats_result", "recipe_result",
-        "candidate_meal", "candidate_workout",
     ):
         state.pop(key, None)
     return state

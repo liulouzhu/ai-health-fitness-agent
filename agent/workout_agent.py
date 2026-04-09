@@ -3,8 +3,8 @@
 
 职责（graph-native 改造后）：
 - 输入解析与运动信息提取
-- 生成候选记录 candidate_workout
-- 设置 pending_action / requires_confirmation
+- 生成候选记录（写入 pending_confirmation.candidate_workout）
+- 设置 pending_confirmation / requires_confirmation
 - 由 graph 的 confirm_node → commit_node 完成实际写入
 """
 
@@ -76,8 +76,8 @@ class WorkoutAgent:
         1. 检索
         2. LLM 生成指导
         3. 提取运动信息
-        4. 生成候选记录 candidate_workout
-        5. 设置 pending_action / requires_confirmation
+        4. 生成候选记录（写入 pending_confirmation.candidate_workout）
+        5. 设置 pending_confirmation / requires_confirmation
         6. 写入 workout_result + final_response
 
         实际 commit 由 graph 的 commit_node 负责。
@@ -119,13 +119,10 @@ class WorkoutAgent:
 
             # === Step 3: 提取运动数据 ===
             workout_info = self._extract_workout_info(query)
-            state["candidate_workout"] = workout_info
-
-            # === Step 4: 设置 pending_action ===
+            # === Step 4: 设置确认态 ===
             # confirmed=True → commit_node 直接 commit（workout_report）
             # confirmed=None → confirm_node 询问用户
             if is_user_reporting and (workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0):
-                state["pending_action"] = "log_workout"
                 state["requires_confirmation"] = True
                 state["pending_confirmation"] = {
                     "action": "log_workout",
@@ -140,7 +137,6 @@ class WorkoutAgent:
                 )
                 state["response"] = state["final_response"]
             elif workout_info.get("duration", 0) > 0 or workout_info.get("calories", 0) > 0:
-                state["pending_action"] = "log_workout"
                 state["requires_confirmation"] = True
                 state["pending_confirmation"] = {
                     "action": "log_workout",
@@ -152,7 +148,6 @@ class WorkoutAgent:
                 state["final_response"] = response.content
                 state["response"] = response.content
             else:
-                state["pending_action"] = None
                 state["requires_confirmation"] = False
                 state["final_response"] = response.content
                 state["response"] = state["final_response"]
@@ -161,8 +156,6 @@ class WorkoutAgent:
             print(f"[WorkoutAgent] 错误: {e}")
             state["response"] = "抱歉，健身指导服务暂时不可用，请稍后重试。"
             state["workout_result"] = None
-            state["candidate_workout"] = None
-            state["pending_action"] = None
             state["requires_confirmation"] = False
 
         # 更新对话历史

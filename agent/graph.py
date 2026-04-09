@@ -1,7 +1,7 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.types import Send, Command
-from agent.state import AgentState, PendingConfirmation
+from agent.state import AgentState
 from agent.router_agent import RouterAgent, CONFIRM_WORDS, DENY_WORDS
 from agent.food_agent import FoodAgent
 from agent.workout_agent import WorkoutAgent
@@ -187,7 +187,7 @@ def food_generate_node(state: AgentState) -> AgentState:
     1. 检索/分析食物
     2. 提取营养数据
     3. 生成候选记录
-    4. 设置 requires_confirmation / pending_action
+    4. 设置 requires_confirmation
     5. 写入 final_response（待确认提示文本）
     """
     log_node("food_generate")
@@ -256,15 +256,16 @@ def confirm_node(state: AgentState) -> AgentState:
     log_node("confirm_node")
     state["route_decision"] = "confirm_node"
 
-    pending_action = state.get("pending_action")
-    candidate_meal = state.get("candidate_meal")
-    candidate_workout = state.get("candidate_workout")
+    pending_conf = state.get("pending_confirmation") or {}
+    action = pending_conf.get("action")
+    candidate_meal = pending_conf.get("candidate_meal")
+    candidate_workout = pending_conf.get("candidate_workout")
 
     # 设置 pending_confirmation（confirmed=None 表示"等待回复"）
     # routing_func 根据 pending_confirmation 是否存在来判断：
     # - 有数据且 confirmed=None → 用户在回复确认提示 → routing_func 会路由到 confirm_recovery
     # - 无数据 → 新确认周期开始 → 显示确认提示
-    if pending_action == "log_meal" and candidate_meal:
+    if action == "log_meal" and candidate_meal:
         analysis = state.get("food_result", state.get("response", ""))
         state["pending_confirmation"] = {
             "action": "log_meal",
@@ -277,7 +278,7 @@ def confirm_node(state: AgentState) -> AgentState:
             f"{analysis}\n\n---\n"
             f"是否将上述食物计入今日热量统计？（是/否）"
         )
-    elif pending_action == "log_workout" and candidate_workout:
+    elif action == "log_workout" and candidate_workout:
         analysis = state.get("workout_result", state.get("response", ""))
         state["pending_confirmation"] = {
             "action": "log_workout",
@@ -290,7 +291,7 @@ def confirm_node(state: AgentState) -> AgentState:
             f"{analysis}\n\n---\n"
             f"是否将上述运动计入今日消耗统计？（是/否）"
         )
-    elif pending_action == "log_both":
+    elif action == "log_both":
         food_analysis = state.get("food_result", "")
         workout_analysis = state.get("workout_result", "")
         state["pending_confirmation"] = {
@@ -309,7 +310,6 @@ def confirm_node(state: AgentState) -> AgentState:
         # 没有待确认内容
         state["final_response"] = "没有待确认的记录。"
         state["requires_confirmation"] = False
-        state["pending_action"] = None
 
     state["response"] = state["final_response"]
     return state
@@ -349,13 +349,10 @@ def commit_node(state: AgentState) -> AgentState:
 
     # 清理确认状态
     state["requires_confirmation"] = False
-    state["pending_action"] = None
-    state["candidate_meal"] = None
-    state["candidate_workout"] = None
     state["pending_confirmation"] = {}
-    state["pending_stats"] = None
 
-    # 清理旧版 pending_stats
+    # --- legacy 兼容层清理（pending_stats.json fallback）---
+    state["pending_stats"] = None
     try:
         memory_agent.clear_pending_stats()
     except Exception:

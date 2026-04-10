@@ -1,6 +1,6 @@
 """
 混合检索模块：结合向量检索 + BM25，使用 RRF 融合
-支持 Query 改写
+支持可选的 Query 改写和 Rerank 重排序
 """
 import os
 import sys
@@ -12,26 +12,18 @@ import json
 import numpy as np
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import ScrollResult, ScoredPoint
+
+from dashscope.rerank.text_rerank import TextReRank  # rerank API
 
 from rank_bm25 import BM25Okapi
 import jieba
 
 from config import AgentConfig
 
-
-# Query 改写提示词
-REWRITE_QUERY_PROMPT = """将用户问题改写为更适合健身知识库检索的形式。
-
-要求：
-1. 补充隐含意图（如"我想瘦点"→"减脂方法"）
-2. 扩展同义词（如"练胸"→"胸部训练 胸肌"）
-3. 分解复杂问题
-4. 使用知识库常用的专业术语
-
-原始问题：{query}
-
-改写后的检索 query（只返回改写后的 query，不要其他内容）："""
+# 模块级常量：Qdrant payload 中需要排除的内部字段
+INTERNAL_PAYLOAD_FIELDS = frozenset(
+    {"_node_content", "_node_type", "document_id", "doc_id", "ref_doc_id"}
+)
 
 
 @dataclass
@@ -115,7 +107,7 @@ class BM25Retriever:
                 # 保存有用的 metadata（排除内部字段）
                 metadata = {
                     k: v for k, v in point.payload.items()
-                    if k not in ("_node_content", "_node_type", "document_id", "doc_id", "ref_doc_id")
+                    if k not in INTERNAL_PAYLOAD_FIELDS
                 }
                 self.metadatas.append(metadata)
 
@@ -188,7 +180,7 @@ class VectorRetriever:
                 self.ids.append(str(point.id))
                 metadata = {
                     k: v for k, v in point.payload.items()
-                    if k not in ("_node_content", "_node_type", "document_id", "doc_id", "ref_doc_id")
+                    if k not in INTERNAL_PAYLOAD_FIELDS
                 }
                 self.metadatas.append(metadata)
 
@@ -222,7 +214,7 @@ class VectorRetriever:
                 if original_idx is not None:
                     metadata = {
                         k: v for k, v in result.payload.items()
-                        if k not in ("_node_content", "_node_type", "document_id", "doc_id", "ref_doc_id")
+                        if k not in INTERNAL_PAYLOAD_FIELDS
                     }
                     retrieved.append(RetrievedChunk(
                         id=str(result.id),
@@ -232,6 +224,21 @@ class VectorRetriever:
                     ))
 
         return retrieved
+
+
+
+# Query 改写提示词
+REWRITE_QUERY_PROMPT = """将用户问题改写为更适合健身知识库检索的形式。
+
+要求：
+1. 补充隐含意图（如"我想瘦点"→"减脂方法"）
+2. 扩展同义词（如"练胸"→"胸部训练 胸肌"）
+3. 分解复杂问题
+4. 使用知识库常用的专业术语
+
+原始问题：{query}
+
+改写后的检索 query（只返回改写后的 query，不要其他内容）："""
 
 
 class QueryRewriter:
@@ -260,7 +267,6 @@ class QueryRewriter:
         try:
             prompt = REWRITE_QUERY_PROMPT.format(query=query)
             response = self.llm.invoke([{"role": "user", "content": prompt}])
-            # 提取返回的 query（去除空白字符）
             rewritten = response.content.strip()
             print(f"[QueryRewriter] '{query}' → '{rewritten}'")
             return rewritten
@@ -292,8 +298,78 @@ def reciprocal_rank_fusion(results_list: list[list[RetrievedChunk]], k: int = 60
     return [item[1] for item in fused]
 
 
+class LLMReranker:
+    """
+    使用 DashScope TextReRank API 对 Hybrid 检索结果进行重排序。
+
+    流程：
+      1. Hybrid 检索取 top_n 候选（默认 20）
+      2. 调用 DashScope TextReRank API 打相关性分数
+      3. 按分数降序排列，返回 top_k
+    """
+
+    def __init__(self, rerank_top_n: int = None):
+        self.rerank_top_n = rerank_top_n if rerank_top_n is not None else AgentConfig.RERANK_TOP_N
+
+    def rerank(self, query: str, chunks: list, top_k: int) -> list[RetrievedChunk]:
+        """
+        使用 DashScope TextReRank API 对 chunks 按与 query 的相关性重新排序。
+
+        Returns:
+            重排序后的 chunks（截取 top_k）
+        """
+        if not chunks:
+            return []
+
+        # 取 top_n 候选文本
+        candidates = chunks[: self.rerank_top_n]
+        doc_texts = [c.text[: 2000] for c in candidates]  # 截断避免超限
+
+        try:
+            resp = TextReRank.call(
+                model=AgentConfig.RERANK_MODEL,
+                query=query,
+                documents=doc_texts,
+                top_n=top_k,
+                return_documents=False,
+                api_key=AgentConfig.LLM_API_KEY,
+            )
+            if resp.status_code != 200 or resp.code:
+                print(f"[LLMReranker] API error: code={resp.code} message={resp.message}")
+                return candidates[:top_k]
+
+            results = resp.output.get('results', []) if resp.output else []
+        except Exception as e:
+            print(f"[LLMReranker] call failed: {e}")
+            return candidates[:top_k]
+
+        # 按 relevance_score 降序排列 chunk
+        ranked_chunks = []
+        for r in results:
+            idx = r.get('index')
+            score = r.get('relevance_score', 0.0)
+            if 0 <= idx < len(candidates):
+                chunk = candidates[idx]
+                chunk.score = score
+                ranked_chunks.append(chunk)
+
+        # 兜底：没拿到结果就返回原始顺序
+        if not ranked_chunks:
+            return candidates[:top_k]
+
+        return ranked_chunks
+
+
 class HybridRetriever:
-    """混合检索器：向量 + BM25 + RRF 融合 + 可选 Query 改写"""
+    """
+    混合检索器：向量 + BM25 + RRF 融合 + 可选 Query 改写 + 可选 LLM Rerank
+
+    检索流程：
+      1. use_query_rewrite=True 时，先对 query 做 LLM 改写
+      2. 并行执行向量检索 + BM25 检索
+      3. RRF 融合
+      4. use_rerank=True 时，对 RRF 结果做 LLM Rerank；失败则 fallback 到 RRF 原始排序
+    """
 
     def __init__(
         self,
@@ -303,55 +379,68 @@ class HybridRetriever:
         vector_top_k: int = None,
         bm25_top_k: int = None,
         fusion_top_k: int = None,
-        use_query_rewrite: bool = None
+        rerank_top_n: int = None,
+        use_rerank: bool = None,
+        use_query_rewrite: bool = None,
     ):
         self.collection_name = collection_name
-        # 从 config 读取默认值
         self.vector_top_k = vector_top_k if vector_top_k is not None else AgentConfig.VECTOR_TOP_K
         self.bm25_top_k = bm25_top_k if bm25_top_k is not None else AgentConfig.BM25_TOP_K
         self.fusion_top_k = fusion_top_k if fusion_top_k is not None else AgentConfig.FUSION_TOP_K
+        self.rerank_top_n = rerank_top_n if rerank_top_n is not None else AgentConfig.RERANK_TOP_N
+        self.use_rerank = use_rerank if use_rerank is not None else AgentConfig.USE_RERANK
         self.use_query_rewrite = use_query_rewrite if use_query_rewrite is not None else AgentConfig.USE_QUERY_REWRITE
 
         self.vector_retriever = VectorRetriever(collection_name, qdrant_client, embed_model)
         self.bm25_retriever = BM25Retriever(collection_name, qdrant_client)
         self.query_rewriter = QueryRewriter() if self.use_query_rewrite else None
+        self.reranker = LLMReranker(rerank_top_n=self.rerank_top_n) if self.use_rerank else None
 
     def retrieve(self, query: str) -> list[RetrievedChunk]:
         """
-        执行混合检索
+        执行混合检索：query rewrite → 向量 + BM25 → RRF → rerank → 返回 top_k
 
         Returns:
-            按 RRF 分数排序的检索结果
+            检索结果列表
         """
-        # Query 改写
+        retrieval_query = query
         if self.use_query_rewrite and self.query_rewriter:
-            query = self.query_rewriter.rewrite(query)
+            retrieval_query = self.query_rewriter.rewrite(query)
 
-        # 并行执行向量检索和 BM25 检索
-        vector_results = self.vector_retriever.retrieve(query, self.vector_top_k)
-        bm25_results = self.bm25_retriever.retrieve(query, self.bm25_top_k)
+        vector_results = self.vector_retriever.retrieve(retrieval_query, self.vector_top_k)
+        bm25_results = self.bm25_retriever.retrieve(retrieval_query, self.bm25_top_k)
 
-        # RRF 融合
         fused_results = reciprocal_rank_fusion([vector_results, bm25_results])
+        if self.use_rerank and self.reranker:
+            rrf_candidates = fused_results[:self.rerank_top_n]
+            reranked = self.reranker.rerank(query, rrf_candidates, self.fusion_top_k)
+            return reranked
 
         return fused_results[:self.fusion_top_k]
 
     def retrieve_with_scores(self, query: str) -> dict:
         """
-        执行混合检索，返回详细分数信息（用于调试）
+        执行混合检索，返回详细分数信息（用于调试）。
+        返回 original_query、rewritten_query、fused_results、reranked_results。
         """
-        # Query 改写
         original_query = query
-        if self.use_query_rewrite and self.query_rewriter:
-            query = self.query_rewriter.rewrite(query)
+        retrieval_query = query
 
-        vector_results = self.vector_retriever.retrieve(query, self.vector_top_k)
-        bm25_results = self.bm25_retriever.retrieve(query, self.bm25_top_k)
+        if self.use_query_rewrite and self.query_rewriter:
+            retrieval_query = self.query_rewriter.rewrite(query)
+
+        vector_results = self.vector_retriever.retrieve(retrieval_query, self.vector_top_k)
+        bm25_results = self.bm25_retriever.retrieve(retrieval_query, self.bm25_top_k)
+
         fused_results = reciprocal_rank_fusion([vector_results, bm25_results])
+        reranked_results = None
+        if self.use_rerank and self.reranker:
+            rrf_candidates = fused_results[:self.rerank_top_n]
+            reranked_results = self.reranker.rerank(query, rrf_candidates, self.fusion_top_k)
 
         return {
             "original_query": original_query,
-            "rewritten_query": query,
+            "rewritten_query": retrieval_query if self.use_query_rewrite else None,
             "vector_results": [
                 {"id": r.id, "text": r.text[:100] + "...", "score": r.score, "metadata": r.metadata}
                 for r in vector_results
@@ -361,9 +450,13 @@ class HybridRetriever:
                 for r in bm25_results
             ],
             "fused_results": [
-                {"id": r.id, "text": r.text[:100] + "...", "metadata": r.metadata}
+                {"id": r.id, "text": r.text[:100] + "...", "score": r.score, "metadata": r.metadata}
                 for r in fused_results[:self.fusion_top_k]
-            ]
+            ],
+            "reranked_results": [
+                {"id": r.id, "text": r.text[:100] + "...", "score": r.score, "metadata": r.metadata}
+                for r in (reranked_results or [])[:self.fusion_top_k]
+            ] if self.use_rerank else []
         }
 
 

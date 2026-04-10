@@ -52,7 +52,13 @@ class RecipeAgent:
             return []
 
     def _build_retrieval_query(self, user_input: str, ctx: dict) -> str:
-        """构建检索 query：融合用户需求 + 营养约束 + 目标"""
+        """
+        构建检索 query（业务上下文拼接，非 LLM Query Rewrite）。
+
+        将用户原始输入与当前营养上下文（剩余卡路里、蛋白质、健身目标）
+        拼接成更丰富的检索 query，帮助召回更符合营养目标的食谱。
+        注意：本函数是确定性字符串拼接，不涉及 LLM 调用。
+        """
         user_constraints = self._extract_constraints_from_input(user_input)
         constraints_str = f"，{user_constraints}" if user_constraints else ""
         return (

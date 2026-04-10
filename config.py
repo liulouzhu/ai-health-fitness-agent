@@ -36,8 +36,10 @@ class AgentConfig:
     # 检索配置
     VECTOR_TOP_K = 20           # 向量检索返回数量
     BM25_TOP_K = 20             # BM25 检索返回数量
-    FUSION_TOP_K = 5            # 融合后返回数量
-    USE_QUERY_REWRITE = True    # 是否启用 Query 改写
+    FUSION_TOP_K = 5            # RRF 融合后返回数量
+    RERANK_TOP_N = 20           # RRF 后送入 Rerank 的候选数量
+    USE_RERANK = True           # 是否启用 Rerank 重排序
+    USE_QUERY_REWRITE = False   # 是否启用 Query 改写（默认关闭）
 
     # ============ Token 预算配置 ============
     # 总 token 预算（留一部分给输出），建议不超过模型 context 的 80%

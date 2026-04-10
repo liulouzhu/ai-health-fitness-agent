@@ -5,10 +5,10 @@
 ## 技术栈
 
 ### Backend
-- Python / FastAPI / LangGraph / LangChain / LlamaIndex / Pydantic v2
+- Python / FastAPI / LangGraph / LangChain / LlamaIndex
 
 ### Retrieval / Storage
-- Qdrant（向量检索）/ BM25 / PostgreSQL / Markdown / JSON file memory
+- Qdrant（向量检索）/ BM25 / PostgreSQL
 
 ### Frontend
 - React 18 / Vite 5 / 原生 CSS + CSS Variables / Fetch API + SSE
@@ -107,6 +107,36 @@ ai_health_fitness_agent/
 ├── graph.png                    # 工作流图
 └── requirements.txt             # Python 依赖
 ```
+
+## 检索链路配置
+
+`tools/retriever.py` 中的 `HybridRetriever` 支持两个独立开关：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `USE_QUERY_REWRITE` | `False` | 是否启用 LLM Query Rewrite（将用户 query 改写为更适合检索的形式） |
+| `USE_RERANK` | `True` | 是否启用 Rerank（RRF 融合后用 LLM 重排序） |
+| `RERANK_TOP_N` | `20` | RRF 后送入 Rerank 的候选数量 |
+
+### 检索流程
+
+```
+query
+  ↓ (可选) USE_QUERY_REWRITE → QueryRewriter.rewrite()
+  ↓
+VectorRetriever + BM25Retriever 并行检索
+  ↓
+RRF 融合
+  ↓ (可选) USE_RERANK → LLMReranker.rerank()
+  ↓
+返回 top_k
+```
+
+- `USE_QUERY_REWRITE=True` 时：rewrite → vector + BM25 → RRF → rerank
+- `USE_QUERY_REWRITE=False` 时：vector + BM25 → RRF → rerank
+- `USE_RERANK=False` 时：vector + BM25 → RRF（无 Rerank）
+
+**Rerank 失败时自动 fallback 到 RRF 原始排序**，不阻塞主流程。
 
 ## 快速开始
 

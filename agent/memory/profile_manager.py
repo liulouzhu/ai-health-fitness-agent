@@ -29,7 +29,7 @@ class ProfileManager(MemoryAgentBase):
             self._atomic_write(self.memory_path, content)
 
     def create_profile(self, answer: str) -> dict:
-        """从用户回答创建档案"""
+        """从用户回答创建档案（通过 LLM 解析）"""
         prompt = """从用户回答中提取用户档案信息。
 
 用户回答：{answer}
@@ -42,7 +42,21 @@ class ProfileManager(MemoryAgentBase):
         if not data:
             raise ValueError(f"无法解析用户回答: {answer}")
 
-        # 计算目标值
+        return self._build_profile_from_data(data)
+
+    def create_profile_structured(self, height: float, weight: float, age: int, gender: str, goal: str) -> dict:
+        """从结构化数据创建档案（跳过 LLM）"""
+        data = {
+            "height": height,
+            "weight": weight,
+            "age": age,
+            "gender": gender,
+            "goal": goal,
+        }
+        return self._build_profile_from_data(data)
+
+    def _build_profile_from_data(self, data: dict) -> dict:
+        """从解析后的数据构建档案（计算目标值并保存）"""
         profile = {
             "user_id": "default",
             "height": int(data.get("height", 0)),

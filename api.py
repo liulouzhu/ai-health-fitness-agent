@@ -406,7 +406,14 @@ async def create_or_update_profile(request: ProfileRequest):
 
     profile = memory_agent.load_profile()
     if not profile.get("height"):
-        result = memory_agent.create_profile(message)
+        # 使用结构化数据创建，跳过 LLM
+        result = memory_agent.create_profile_structured(
+            height=request.height,
+            weight=request.weight,
+            age=request.age,
+            gender=request.gender,
+            goal=request.goal,
+        )
         return {"message": "档案创建成功", "profile": result}
     else:
         result = memory_agent.update_profile(message)

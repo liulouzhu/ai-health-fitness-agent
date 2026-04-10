@@ -14,12 +14,10 @@
 - React 18 / Vite 5 / 原生 CSS + CSS Variables / Fetch API + SSE
 
 ## 项目亮点
-
-- **完整健康管理闭环**：饮食分析 → 训练建议 → 食谱推荐 → 每日统计 → 个性化记忆
+- **多级记忆及统一上下文管理**：用户档案 / 偏好提取 / 长期记忆摘要 / token 预算裁剪 / 分层上下文装配
 - **多模态 + 多意图路由**：支持文本/图片输入，`food + workout`、`food + stats` 等组合请求并发处理
 - **真正个性化**：维护用户档案、持续积累偏好、支持 PostgreSQL 持久化 LangGraph 状态
 - **检索增强**：Qdrant + BM25 混合检索，必要时回退 Tavily 联网补充
-- **多级记忆及统一上下文管理**：用户档案 / 偏好提取 / 长期记忆摘要 / token 预算裁剪 / 分层上下文装配
 
 ## 核心功能
 
@@ -86,21 +84,23 @@ classify_intent ──fan-out──→ [food_branch, workout_branch]（并发执
 ```text
 ai_health_fitness_agent/
 ├── agent/
+│   ├── __init__.py
+│   ├── context_manager.py       # 上下文装配与 token 预算
 │   ├── food_agent.py            # 食物分析
 │   ├── graph.py                 # LangGraph 工作流定义
+│   ├── llm.py                   # LLM 调用封装
+│   ├── memory/                  # 用户档案/偏好/记忆模块
 │   ├── multi_agent.py           # 多意图 fan-out / fan-in
+│   ├── recipe_agent.py          # 食谱推荐
 │   ├── router_agent.py          # 意图分类
 │   ├── state.py                 # AgentState 定义
-│   ├── memory_agent.py          # 用户档案/偏好/记忆
-│   ├── recipe_agent.py          # 食谱推荐
-│   ├── workout_agent.py         # 健身指导
-│   └── context_manager.py       # 上下文装配与 token 预算
+│   └── workout_agent.py         # 健身指导
 ├── frontend/                    # React + Vite 前端
 ├── knowledge/                   # 知识库与索引构建
 ├── memory/                      # 用户档案、历史、统计
 ├── tools/
 │   ├── retriever.py             # 混合检索
-│   └── search_with_tavily.py   # Tavily 搜索
+│   └── search_with_tavily.py    # Tavily 搜索
 ├── uploads/images/              # 上传图片存储
 ├── api.py                       # FastAPI 入口
 ├── config.py                    # 配置项

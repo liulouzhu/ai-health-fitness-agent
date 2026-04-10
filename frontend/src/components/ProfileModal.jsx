@@ -15,7 +15,7 @@ const GOAL_OPTIONS = [
 ];
 
 export default function ProfileModal({ isInitial = false }) {
-  const { loadProfile, setProfileModalOpen } = useApp();
+  const { dispatch, loadProfile, setProfileModalOpen } = useApp();
   const [form, setForm] = useState({
     height: '',
     weight: '',
@@ -41,14 +41,18 @@ export default function ProfileModal({ isInitial = false }) {
     setSaving(true);
     setError('');
     try {
-      await saveProfile({
+      const result = await saveProfile({
         height: parseFloat(height),
         weight: parseFloat(weight),
         age: parseInt(age, 10),
         gender: form.gender,
         goal: form.goal,
       });
-      await loadProfile();
+      if (result.profile) {
+        dispatch({ type: 'PROFILE_LOAD_OK', payload: result.profile });
+      } else {
+        await loadProfile();
+      }
       setProfileModalOpen(false);
       if (isInitial) {
         localStorage.setItem('profileModalShown', 'true');

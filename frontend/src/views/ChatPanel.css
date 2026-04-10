@@ -211,15 +211,6 @@
   to { transform: rotate(360deg); }
 }
 
-/* ── 移除旧的 URL 输入框样式 ── */
-.chat-image-input-row {
-  display: none;
-}
-
-.chat-image-input {
-  display: none;
-}
-
 .chat-input-row {
   display: flex;
   align-items: flex-end;

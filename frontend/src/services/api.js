@@ -24,7 +24,10 @@ export async function saveProfile(profileData) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(profileData),
   });
-  if (!res.ok) throw new Error('保存档案失败');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: '保存档案失败' }));
+    throw new Error(err.detail || '保存档案失败');
+  }
   return res.json();
 }
 

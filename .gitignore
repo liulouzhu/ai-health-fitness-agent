@@ -6,3 +6,8 @@ __pycache__/
 *.py[cod]
 .claude/
 .vscode/
+.pytest_cache/
+uploads/
+tests/
+scripsts/
+conftest.py

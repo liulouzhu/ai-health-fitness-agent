@@ -31,6 +31,7 @@ const initialState = {
   // UI
   activeView: 'chat', // 'chat' | 'history'
   sidebarOpen: true,
+  profileModalOpen: false,
 };
 
 function reducer(state, action) {
@@ -117,6 +118,9 @@ function reducer(state, action) {
     case 'SET_BACKEND_STATUS':
       return { ...state, backendAlive: action.payload };
 
+    case 'SET_PROFILE_MODAL_OPEN':
+      return { ...state, profileModalOpen: action.payload };
+
     default:
       return state;
   }
@@ -178,6 +182,7 @@ export function AppProvider({ children }) {
         loadProfile,
         loadStats,
         loadHistory,
+        setProfileModalOpen: (open) => dispatch({ type: 'SET_PROFILE_MODAL_OPEN', payload: open }),
       }}
     >
       {children}

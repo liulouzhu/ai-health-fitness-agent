@@ -13,6 +13,21 @@ export async function fetchProfile() {
   return res.json();
 }
 
+/**
+ * 保存用户档案（创建或更新）
+ * @param {Object} profileData - { height, weight, age, gender, goal }
+ * @returns {Promise<Object>}
+ */
+export async function saveProfile(profileData) {
+  const res = await fetch(`${API_BASE}profile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profileData),
+  });
+  if (!res.ok) throw new Error('保存档案失败');
+  return res.json();
+}
+
 export async function fetchDailyStats() {
   const res = await fetch(`${API_BASE}daily_stats`);
   if (!res.ok) throw new Error('获取统计失败');

@@ -40,6 +40,7 @@ from tools.retriever import (
     VectorRetriever,
     BM25Retriever,
     QueryRewriter,
+    LLMReranker,
     reciprocal_rank_fusion,
 )
 
@@ -114,71 +115,6 @@ class HybridWithRewriteRetriever:
         bm25_results = self.bm25_retriever.retrieve(rewritten, self.bm25_top_k)
         fused = reciprocal_rank_fusion([vector_results, bm25_results])
         return fused[: self.fusion_top_k], rewritten
-
-
-class LLMReranker:
-    """
-    使用 LLM 对 Hybrid 检索结果进行重排序。
-
-    流程：
-      1. Hybrid 检索取 top_n 候选（默认 20）
-      2. 调用 DashScope TextReRank API 打相关性分数
-      3. 按分数降序排列，返回 top_k
-    """
-
-    def __init__(self, rerank_top_n: int = 20):
-        self.rerank_top_n = rerank_top_n
-
-    def rerank(self, query: str, chunks: list, top_k: int) -> list:
-        """
-        使用 DashScope TextReRank API 对 chunks 按与 query 的相关性重新排序。
-
-        Returns:
-            重排序后的 chunks（截取 top_k）
-        """
-        if not chunks:
-            return []
-
-        from dashscope.rerank.text_rerank import TextReRank
-
-        # 取 top_n 候选文本
-        candidates = chunks[: self.rerank_top_n]
-        doc_texts = [c.text[: 2000] for c in candidates]  # 截断避免超限
-
-        try:
-            resp = TextReRank.call(
-                model=AgentConfig.RERANK_MODEL,
-                query=query,
-                documents=doc_texts,
-                top_n=top_k,
-                return_documents=False,
-                api_key=AgentConfig.LLM_API_KEY,
-            )
-            if resp.status_code != 200 or resp.code:
-                print(f"[LLMReranker] API error: code={resp.code} message={resp.message}")
-                return candidates[:top_k]
-
-            results = resp.output.get('results', []) if resp.output else []
-        except Exception as e:
-            print(f"[LLMReranker] call failed: {e}")
-            return candidates[:top_k]
-
-        # 按 relevance_score 降序排列 chunk
-        # results 是 [{index, relevance_score}, ...] 已按分数降序
-        ranked_chunks = []
-        for r in results:
-            idx = r.get('index')
-            score = r.get('relevance_score', 0.0)
-            if 0 <= idx < len(candidates):
-                chunk = candidates[idx]
-                chunk.score = score  # 更新 chunk.score
-                ranked_chunks.append(chunk)
-
-        # 兜底：没拿到结果就返回原始顺序
-        if not ranked_chunks:
-            return candidates[:top_k]
-
-        return ranked_chunks
 
 
 class HybridWithRerankRetriever:

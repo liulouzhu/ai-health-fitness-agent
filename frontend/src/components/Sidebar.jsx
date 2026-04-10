@@ -40,8 +40,8 @@ export default function Sidebar() {
         <QuickActions />
       </div>
 
-      {/* 空档案时渲染首次弹窗 */}
-      {state.profile === null && (
+      {/* 空档案时渲染弹窗（受 profileModalOpen 控制） */}
+      {state.profile === null && state.profileModalOpen && (
         <ProfileModal isInitial={true} />
       )}
     </div>

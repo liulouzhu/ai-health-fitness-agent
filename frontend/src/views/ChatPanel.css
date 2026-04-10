@@ -90,39 +90,7 @@
 
 /* ── 拖拽上传区域 ── */
 .chat-drop-zone {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  margin-bottom: var(--space-3);
-  border: 2px dashed var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg);
-  color: var(--color-text-tertiary);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  animation: slideDown 150ms ease;
-}
-
-.chat-drop-zone svg {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-}
-
-.chat-drop-zone:hover {
-  border-color: var(--color-accent);
-  background: var(--color-accent-bg);
-  color: var(--color-accent);
-}
-
-.chat-drop-zone.dragging {
-  border-color: var(--color-accent);
-  background: var(--color-accent-bg);
-  color: var(--color-accent);
-  transform: scale(1.01);
+  display: none; /* 已移除，使用输入行内的按钮代替 */
 }
 
 /* ── 上传中状态 ── */
@@ -256,6 +224,15 @@
   display: flex;
   align-items: flex-end;
   gap: var(--space-2);
+  padding: var(--space-2);
+  border: 2px dashed transparent;
+  border-radius: var(--radius-lg);
+  transition: all var(--transition-fast);
+}
+
+.chat-input-row.dragging {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .chat-textarea {

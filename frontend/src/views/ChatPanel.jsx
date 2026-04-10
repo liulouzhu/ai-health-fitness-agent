@@ -269,24 +269,6 @@ export default function ChatPanel() {
           </div>
         )}
 
-        {/* 拖拽上传区域（未上传时显示） */}
-        {!imageUrl && !isUploading && (
-          <div
-            className={`chat-drop-zone ${isDragging ? 'dragging' : ''}`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={handleUploadClick}
-          >
-            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <rect x="2" y="4" width="16" height="12" rx="2"/>
-              <circle cx="7" cy="8.5" r="1.5"/>
-              <path d="M2 14l4-4 3 3 3-3 4 4" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-            <span>{isDragging ? '松开以上传图片' : '拖拽图片或点击上传'}</span>
-          </div>
-        )}
-
         <input
           ref={fileInputRef}
           type="file"
@@ -295,7 +277,23 @@ export default function ChatPanel() {
           style={{ display: 'none' }}
         />
 
-        <div className="chat-input-row">
+        <div
+          className={`chat-input-row ${isDragging ? 'dragging' : ''}`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <button
+            className={`chat-image-toggle ${imageUrl ? 'active' : ''}`}
+            onClick={handleUploadClick}
+            title="上传图片"
+          >
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <rect x="2" y="4" width="16" height="12" rx="2"/>
+              <circle cx="7" cy="8.5" r="1.5"/>
+              <path d="M2 14l4-4 3 3 3-3 4 4" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
           <textarea
             ref={inputRef}
             className="chat-textarea"

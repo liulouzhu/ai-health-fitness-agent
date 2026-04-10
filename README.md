@@ -104,6 +104,7 @@ ai_health_fitness_agent/
 ├── uploads/images/              # 上传图片存储
 ├── api.py                       # FastAPI 入口
 ├── config.py                    # 配置项
+├── graph.png                    # 工作流图
 └── requirements.txt             # Python 依赖
 ```
 

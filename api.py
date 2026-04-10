@@ -1,23 +1,3 @@
-"""
-FastAPI 应用入口（graph-native 改造版）
-
-改造目标：让 API 变薄，把主流程真正交给 LangGraph。
-
-API 层职责（改造后）：
-- 接收请求，构造 graph 输入状态
-- 调用 graph.invoke() / graph.stream()
-- 将 graph 输出转成 JSON 或 SSE
-- 处理 HTTP 层面的 concerns（文件上传、CORS、静态文件等）
-
-不再保留：
-- 手动 RouterAgent().classify_intent(...)
-- 手动 if/else 路由模拟图逻辑
-- 手动 ThreadPoolExecutor 并发
-- 多处重复的 _update_graph_state 调用
-
-所有业务路由、并发、状态管理统一收敛到 agent/graph.py。
-"""
-
 import sys
 sys.path.insert(0, ".")
 import uuid

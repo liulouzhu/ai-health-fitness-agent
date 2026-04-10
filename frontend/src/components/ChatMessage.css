@@ -160,3 +160,73 @@
     max-width: calc(100% - 40px);
   }
 }
+
+/* ========== 执行轨迹面板 ========== */
+.trace-panel {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  margin-bottom: var(--space-2);
+}
+
+.trace-panel-live {
+  border-style: dashed;
+  background: rgba(123, 160, 91, 0.06);
+}
+
+.trace-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  user-select: none;
+}
+
+.trace-title {
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.trace-toggle {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  opacity: 0.7;
+}
+
+.trace-list {
+  margin-top: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trace-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  color: var(--color-text-secondary);
+}
+
+.trace-item-live .trace-icon {
+  color: var(--color-accent);
+  animation: blink 1s step-end infinite;
+}
+
+.trace-icon {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.trace-message {
+  line-height: 1.4;
+}
+
+.trace-item-classification .trace-icon { color: #7BA05B; }
+.trace-item-routing .trace-icon { color: #6B9FD4; }
+.trace-item-node_start .trace-icon { color: #C9A86C; }
+.trace-item-node_end .trace-icon { color: #9E7BBD; }
+.trace-item-final .trace-icon { color: #C96B6B; }

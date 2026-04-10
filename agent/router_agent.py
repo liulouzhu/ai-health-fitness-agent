@@ -2,6 +2,7 @@ from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory import get_memory_agent
 from agent.context_manager import get_context_manager
+from agent.stream_utils import emit_trace, emit_event
 
 INTENT_TYPES = ["food", "workout", "recipe", "stats_query", "profile_update", "confirm", "general", "food_report", "workout_report"]
 
@@ -21,6 +22,7 @@ class RouterAgent:
     def check_profile(self, state: AgentState) -> AgentState:
         """检查用户档案是否完整"""
         print(f"[Router] check_profile - 检查用户档案是否完整")
+        emit_trace("node_start", "check_profile", "正在检查用户档案...")
         state["route_decision"] = "check_profile"
         if self.memory_agent.is_profile_complete():
             state["profile_complete"] = True
@@ -29,12 +31,27 @@ class RouterAgent:
             state["profile_complete"] = False
             state["response"] = self.memory_agent.get_initial_questions()
             print(f"[Router] check_profile - 档案不完整，请求用户填写")
+        emit_trace("node_end", "check_profile", "执行完成")
+        from agent.graph import trim_state
+        trim_state(state)
         return state
 
     def classify_intent(self, state: AgentState) -> AgentState:
         """意图分类node"""
         print(f"[Router] classify_intent - 开始意图分类")
+        emit_trace("node_start", "classify_intent", "正在识别用户意图...")
         state["route_decision"] = "classify_intent"
+        intent_display_map = {
+            "food": "食物分析",
+            "food_report": "饮食记录",
+            "workout": "运动指导",
+            "workout_report": "运动记录",
+            "recipe": "食谱推荐",
+            "stats_query": "统计查询",
+            "profile_update": "档案更新",
+            "confirm": "确认操作",
+            "general": "通用对话",
+        }
         try:
             print(f"[Router] classify_intent - 用户输入: {state.get('input_message', '')[:50]}...")
 
@@ -45,17 +62,26 @@ class RouterAgent:
                     state["intent"] = "profile_update"
                 else:
                     state["intent"] = "general"
+                emit_event({"type": "intent", "intent": state["intent"]})
+                emit_trace("classification", "classify_intent", f"识别为{intent_display_map.get(state['intent'], state['intent'])}")
+                emit_trace("node_end", "classify_intent", "执行完成")
                 return state
 
             image_info = state.get("image_info", {})
             if image_info.get("has_image", False):
                 state["intent"] = "food"
+                emit_event({"type": "intent", "intent": state["intent"]})
+                emit_trace("classification", "classify_intent", f"识别为{intent_display_map.get(state['intent'], state['intent'])}")
+                emit_trace("node_end", "classify_intent", "执行完成")
                 return state
 
             # 检查是否是确认回答
             user_input = state.get("input_message", "").strip().lower()
             if self._is_confirmation(user_input):
                 state["intent"] = "confirm"
+                emit_event({"type": "intent", "intent": state["intent"]})
+                emit_trace("classification", "classify_intent", f"识别为{intent_display_map.get(state['intent'], state['intent'])}")
+                emit_trace("node_end", "classify_intent", "执行完成")
                 return state
 
             # 检查是否是上下文相关的短回复（如"换一个"、"再来一个"等）
@@ -63,6 +89,9 @@ class RouterAgent:
             if context_intent:
                 state["intent"] = context_intent
                 state["last_intent"] = context_intent
+                emit_event({"type": "intent", "intent": state["intent"]})
+                emit_trace("classification", "classify_intent", f"识别为{intent_display_map.get(state['intent'], state['intent'])}")
+                emit_trace("node_end", "classify_intent", "执行完成")
                 return state
 
             # 构建消息列表，融入对话历史
@@ -102,10 +131,17 @@ class RouterAgent:
             # 保存上一个意图
             state["last_intent"] = valid_intents[0]
             print(f"[Router] classify_intent - 分类结果: {valid_intents}, last_intent: {valid_intents[0]}")
+            emit_event({"type": "intent", "intent": state["intent"]})
+            intent_labels = [intent_display_map.get(i, i) for i in valid_intents]
+            emit_trace("classification", "classify_intent", f"识别为{' + '.join(intent_labels)}")
+            emit_trace("node_end", "classify_intent", "执行完成")
         except Exception as e:
             print(f"[Router] classify_intent 错误: {e}")
             state["intent"] = "general"
             state["last_intent"] = None
+            emit_event({"type": "intent", "intent": state["intent"]})
+            emit_trace("classification", "classify_intent", "识别为通用对话")
+            emit_trace("node_end", "classify_intent", "执行完成")
         return state
 
     def _check_context_dependent_intent(self, state: AgentState) -> str:
@@ -151,6 +187,7 @@ class RouterAgent:
     def handle_profile_update(self, state: AgentState) -> AgentState:
         """处理档案更新"""
         print(f"[Router] handle_profile_update - 处理档案更新")
+        emit_trace("node_start", "profile_node", "正在更新用户档案...")
         user_input = state.get("input_message", "")
 
         if not self.memory_agent.load_profile().get("height"):
@@ -170,6 +207,7 @@ class RouterAgent:
                 state["response"] = result.get("message", "未检测到档案变化")
 
         state["final_response"] = state["response"]
+        emit_trace("node_end", "profile_node", "执行完成")
         return state
 
     def handle_confirm(self, state: AgentState) -> AgentState:
@@ -179,6 +217,7 @@ class RouterAgent:
         这个方法主要用于从旧版 pending_stats.json 恢复兼容的情况。
         """
         print(f"[Router] handle_confirm - 处理确认")
+        emit_trace("node_start", "confirm_recovery", "正在处理确认回复...")
         user_input = state.get("input_message", "").strip().lower()
 
         # 优先从 state 中的 pending_confirmation 读取
@@ -209,11 +248,13 @@ class RouterAgent:
 
         self.memory_agent.clear_pending_stats()
         state["pending_stats"] = None
+        emit_trace("node_end", "confirm_recovery", "执行完成")
         return state
 
     def handle_general(self, state: AgentState) -> AgentState:
         """一般对话node"""
         print(f"[Router] handle_general - 处理一般对话")
+        emit_trace("node_start", "general_node", "正在思考回复...")
         try:
             if not state.get("profile_complete", True):
                 state["response"] = self.memory_agent.get_initial_questions()
@@ -240,6 +281,7 @@ class RouterAgent:
             print(f"[Router] handle_general 错误: {e}")
             state["response"] = "抱歉，服务暂时不可用，请稍后重试。"
             state["final_response"] = state["response"]
+        emit_trace("node_end", "general_node", "执行完成")
         return state
 
     def handle_stats_query(self, state: AgentState) -> AgentState:

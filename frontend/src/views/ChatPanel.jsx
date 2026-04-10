@@ -132,8 +132,9 @@ export default function ChatPanel() {
       const stream = createChatStream(message, imageUrlRef.current);
       streamControllerRef.current = stream;
 
-      // Start streaming state first (no message created yet)
+      // 先进入流式状态，并立即创建 assistant 占位，方便承接进度事件
       dispatch({ type: 'CHAT_SET_STREAMING', payload: { isStreaming: true, intent: null } });
+      dispatch({ type: 'CHAT_ADD_ASSISTANT_MESSAGE' });
 
       // Clear image after sending
       setImageUrl(null);
@@ -144,18 +145,29 @@ export default function ChatPanel() {
         if (parsed.type === 'done') {
           break;
         } else if (parsed.type === 'intent') {
-          // First SSE chunk: intent arrived — create assistant message with this intent
           dispatch({
-            type: 'CHAT_SET_STREAMING',
-            payload: { isStreaming: true, intent: parsed.intent },
+            type: 'CHAT_SET_LAST_ASSISTANT_INTENT',
+            payload: parsed.intent,
           });
-          dispatch({ type: 'CHAT_ADD_ASSISTANT_MESSAGE' });
+        } else if (parsed.type === 'error') {
+          dispatch({ type: 'CHAT_STREAM_ERROR', payload: parsed.message });
         } else if (parsed.type === 'token') {
           dispatch({
             type: 'CHAT_STREAM_TOKEN',
             payload: parsed.value,
           });
+        } else if (parsed.type === 'trace') {
+          // 累计执行轨迹事件
+          dispatch({
+            type: 'CHAT_ADD_TRACE',
+            payload: {
+              stage: parsed.stage,
+              node: parsed.node,
+              message: parsed.message,
+            },
+          });
         }
+        // meta events are protocol markers only; nothing to render
       }
 
       dispatch({ type: 'CHAT_STREAM_DONE' });
@@ -199,24 +211,17 @@ export default function ChatPanel() {
           </div>
         )}
 
-        {state.messages.map((msg) => (
+        {state.messages.map((msg, index) => (
           <ChatMessage
             key={msg.id}
             role={msg.role}
             content={msg.content}
             intent={msg.intent}
             imageUrl={msg.imageUrl}
+            traces={msg.traces || []}
+            isStreaming={state.isStreaming && index === state.messages.length - 1 && msg.role === 'assistant'}
           />
         ))}
-
-        {state.isStreaming && (
-          <ChatMessage
-            role="assistant"
-            content=""
-            intent={null}
-            isStreaming={true}
-          />
-        )}
 
         {state.streamingError && (
           <div className="chat-error">

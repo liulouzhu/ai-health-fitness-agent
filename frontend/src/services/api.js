@@ -102,16 +102,23 @@ export function createChatStream(message, imageUrl = null) {
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          if (buffer.trim()) yield buffer.trim();
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim();
-            yield data;
+        // 按 \n\n 分割完整 SSE 事件
+        const events = buffer.split('\n\n');
+        // 保留最后一条残缺数据（还没收到完整的 \n\n）
+        buffer = events.pop() ?? '';
+
+        for (const event of events) {
+          for (const line of event.split('\n')) {
+            if (line.startsWith('data: ')) {
+              yield line.slice(6).trim();
+            }
           }
         }
       }
@@ -128,10 +135,26 @@ export function parseSSEData(data) {
   if (data === '[DONE]') return { type: 'done' };
   try {
     const parsed = JSON.parse(data);
-    if (parsed.intent) {
-      return { type: 'intent', intent: parsed.intent };
+    switch (parsed.type) {
+      case 'intent':
+        return { type: 'intent', intent: parsed.intent };
+      case 'text':
+        return { type: 'token', value: parsed.content ?? '' };
+      case 'error':
+        return { type: 'error', message: parsed.message || '请求失败' };
+      case 'trace':
+        return { type: 'trace', stage: parsed.stage, node: parsed.node, message: parsed.message };
+      case 'session':
+      case 'node':
+      case 'commit':
+      case 'confirm_pending':
+        return { type: 'meta', value: parsed };
+      default:
+        if (parsed.intent) {
+          return { type: 'intent', intent: parsed.intent };
+        }
+        return { type: 'meta', value: parsed };
     }
-    return { type: 'token', value: data };
   } catch {
     return { type: 'token', value: data };
   }

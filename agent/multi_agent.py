@@ -118,7 +118,7 @@ workout_stats_fanout = _make_fanout(
 
 # ============ 汇合节点 ============
 
-def multi_join_node(state: AgentState) -> AgentState:
+def multi_join_node(state: AgentState) -> dict:
     """
     多意图 fan-out 后的汇合节点。
 
@@ -127,8 +127,9 @@ def multi_join_node(state: AgentState) -> AgentState:
     - food_pending_conf / workout_pending_conf
 
     生成最终响应和统一的 pending_confirmation（用于 confirm 流程）。
+
+    返回增量字段而非完整 state，防止 checkpoint 过大。
     """
-    state["route_decision"] = "multi_join_node"
     food_result = state.get("food_branch_result", "")
     workout_result = state.get("workout_branch_result", "")
     stats_result = state.get("stats_branch_result", "")
@@ -137,7 +138,6 @@ def multi_join_node(state: AgentState) -> AgentState:
 
     print(f"[Join] multi_join_node - food_result={bool(food_result)}, "
           f"workout_result={bool(workout_result)}, stats_result={bool(stats_result)}")
-    print(f"[Join] food_pending_conf={bool(food_conf)}, workout_pending_conf={bool(workout_conf)}")
 
     # 合并各分支响应
     sections = []
@@ -148,12 +148,10 @@ def multi_join_node(state: AgentState) -> AgentState:
     if stats_result:
         sections.append(f"**今日统计**\n{stats_result}")
 
-    state["final_response"] = "\n\n".join(sections) if sections else "已处理您的请求。"
-    state["response"] = state["final_response"]
+    final_response = "\n\n".join(sections) if sections else "已处理您的请求。"
 
-    # 确定 pending_confirmation
+    # 确定 pending_confirmation（analysis_text 只保留摘要，不保留全文）
     unified_conf = None
-
     has_food = bool(food_conf.get("action"))
     has_workout = bool(workout_conf.get("action"))
 
@@ -162,28 +160,44 @@ def multi_join_node(state: AgentState) -> AgentState:
             "action": "log_both",
             "candidate_meal": food_conf.get("candidate_meal"),
             "candidate_workout": workout_conf.get("candidate_workout"),
-            "analysis_text": f"{food_conf.get('analysis_text', '')}\n\n{workout_conf.get('analysis_text', '')}",
+            "analysis_text": "（含食物和运动记录，请确认）",
             "confirmed": None,
         }
     elif has_food:
-        unified_conf = food_conf
+        unified_conf = {
+            "action": food_conf.get("action"),
+            "candidate_meal": food_conf.get("candidate_meal"),
+            "candidate_workout": None,
+            "analysis_text": "（请确认是否计入）",
+            "confirmed": None,
+        }
     elif has_workout:
-        unified_conf = workout_conf
+        unified_conf = {
+            "action": workout_conf.get("action"),
+            "candidate_meal": None,
+            "candidate_workout": workout_conf.get("candidate_workout"),
+            "analysis_text": "（请确认是否计入）",
+            "confirmed": None,
+        }
 
     if unified_conf:
-        state["pending_confirmation"] = unified_conf
-        state["requires_confirmation"] = True
-        state["final_response"] += (
-            f"\n\n---\n"
-            f"是否将上述记录计入今日统计？（是/否）"
-        )
-        state["response"] = state["final_response"]
+        final_response += "\n\n---\n是否将上述记录计入今日统计？（是/否）"
 
-    # 清理分支结果字段
-    for key in (
-        "food_branch_result", "workout_branch_result", "stats_branch_result",
-        "food_pending_conf", "workout_pending_conf",
-        "food_result", "workout_result", "stats_result", "recipe_result",
-    ):
-        state.pop(key, None)
-    return state
+    # 返回增量字段，不包含 state 完整副本
+    return {
+        "route_decision": "multi_join_node",
+        "final_response": final_response,
+        "response": final_response,
+        "pending_confirmation": unified_conf,
+        "requires_confirmation": bool(unified_conf),
+        # 清理分支结果字段
+        "food_branch_result": None,
+        "workout_branch_result": None,
+        "stats_branch_result": None,
+        "food_pending_conf": None,
+        "workout_pending_conf": None,
+        "food_result": None,
+        "workout_result": None,
+        "stats_result": None,
+        "recipe_result": None,
+    }

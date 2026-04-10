@@ -464,12 +464,28 @@ class HybridRetriever:
 _retriever_cache: dict[str, HybridRetriever] = {}
 
 
-def get_hybrid_retriever(collection_name: str) -> HybridRetriever:
-    """创建混合检索器（带缓存，同一 collection 只初始化一次）"""
+def get_hybrid_retriever(collection_name: str, use_rerank: bool = None, use_query_rewrite: bool = None) -> HybridRetriever:
+    """创建混合检索器（带缓存，同一 collection 只初始化一次）
+
+    Args:
+        collection_name: collection 名称
+        use_rerank: 是否启用 rerank（None 时跟随全局配置 AgentConfig.USE_RERANK）
+        use_query_rewrite: 是否启用 query 改写（None 时跟随全局配置 AgentConfig.USE_QUERY_REWRITE）
+    """
     if collection_name not in _retriever_cache:
         from qdrant_client import QdrantClient
         from agent.llm import get_embedding_model
         qdrant_client = QdrantClient(host=AgentConfig.QDRANT_HOST, port=AgentConfig.QDRANT_PORT)
         embed_model = get_embedding_model()
         _retriever_cache[collection_name] = HybridRetriever(collection_name, qdrant_client, embed_model)
-    return _retriever_cache[collection_name]
+    retriever = _retriever_cache[collection_name]
+
+    # 支持运行时覆盖配置（不影响缓存的其他调用方）
+    if use_rerank is not None:
+        retriever.use_rerank = use_rerank
+        retriever.reranker = LLMReranker(rerank_top_n=retriever.rerank_top_n) if use_rerank else None
+    if use_query_rewrite is not None:
+        retriever.use_query_rewrite = use_query_rewrite
+        retriever.query_rewriter = QueryRewriter() if use_query_rewrite else None
+
+    return retriever

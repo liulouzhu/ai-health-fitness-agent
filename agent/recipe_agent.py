@@ -1,9 +1,21 @@
 from agent.llm import get_llm
 from agent.state import AgentState
 from agent.memory import get_memory_agent
-from agent.context_manager import get_context_manager, is_retrieval_sufficient
+from agent.context_manager import get_context_manager
 from tools.search_with_tavily import search_with_tavily
 from tools.retriever import get_hybrid_retriever
+
+
+def _is_retrieval_sufficient_lightweight(retrieved_results: list, min_results: int = 2, min_total_len: int = 100) -> bool:
+    """
+    轻量规则判断检索是否足够（无 LLM 调用）。
+    - 结果数量 >= min_results
+    - 结果文本总长度 >= min_total_len
+    """
+    if not retrieved_results:
+        return False
+    total_len = sum(len(r.text) for r in retrieved_results)
+    return len(retrieved_results) >= min_results and total_len >= min_total_len
 
 
 class RecipeAgent:
@@ -16,7 +28,8 @@ class RecipeAgent:
     @property
     def hybrid_retriever(self):
         if self._hybrid_retriever is None:
-            self._hybrid_retriever = get_hybrid_retriever(self.collection_name)
+            # recipe 分支关闭 rerank，避免额外 LLM 调用开销
+            self._hybrid_retriever = get_hybrid_retriever(self.collection_name, use_rerank=False)
         return self._hybrid_retriever
 
     def _extract_constraints_from_input(self, user_input: str) -> str:
@@ -87,14 +100,21 @@ class RecipeAgent:
 
             # 2. 构建检索 query 并检索
             query = self._build_retrieval_query(user_input, ctx)
+            print(f"[RecipeAgent] rerank enabled: {self.hybrid_retriever.use_rerank}")
             retrieved_results = self.retrieve_from_qdrant(query)
             retrieved_content = "\n".join([r.text for r in retrieved_results]) if retrieved_results else ""
+            result_count = len(retrieved_results)
+            result_len = sum(len(r.text) for r in retrieved_results)
+            print(f"[RecipeAgent] 本地检索结果: {result_count} 条, 总长度: {result_len}")
 
-            # 3. 判断检索是否足够，不足则联网补充
-            if not is_retrieval_sufficient(retrieved_content, domain="recipe"):
+            # 3. 轻量规则判断检索是否足够，不足则联网补充
+            if not _is_retrieval_sufficient_lightweight(retrieved_results):
+                print(f"[RecipeAgent] 触发 Tavily 联网补充")
                 tavily_content = search_with_tavily(query)
                 if tavily_content:
                     retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"
+            else:
+                print(f"[RecipeAgent] 本地检索足够，跳过 Tavily")
 
             # 4. 通过 ContextManager 统一构建消息（含 token 预算管理）
             preferences = ctx_mgr.get_preferences_str()

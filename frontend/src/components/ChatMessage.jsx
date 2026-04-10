@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import './ChatMessage.css';
 
 const INTENT_CONFIG = {
@@ -11,6 +11,14 @@ const INTENT_CONFIG = {
   profile_update: { label: '更新档案', color: '#7BA05B', bg: 'rgba(123,160,91,0.08)' },
   confirm: { label: '确认', color: '#C96B6B', bg: 'rgba(201,107,107,0.08)' },
   general: { label: '对话', color: '#6B6B6B', bg: 'rgba(107,107,107,0.08)' },
+};
+
+const STAGE_ICONS = {
+  classification: '🎯',
+  routing: '→',
+  node_start: '▶',
+  node_end: '✓',
+  final: '📤',
 };
 
 function formatContent(text) {
@@ -30,7 +38,44 @@ function formatContent(text) {
     .replace(/$/, '</p>');
 }
 
-export default function ChatMessage({ role, content, intent, isStreaming = false, imageUrl = null }) {
+function TraceItem({ trace }) {
+  const icon = STAGE_ICONS[trace.stage] || '•';
+  return (
+    <div className={`trace-item trace-item-${trace.stage}`}>
+      <span className="trace-icon">{icon}</span>
+      <span className="trace-message">{trace.message}</span>
+    </div>
+  );
+}
+
+function TracePanel({ traces }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!traces || traces.length === 0) return null;
+
+  // 按最新事件优先展示，让当前阶段显示在最上面
+  const orderedTraces = [...traces].reverse();
+  const visibleTraces = expanded ? orderedTraces : orderedTraces.slice(0, 2);
+  const hiddenCount = traces.length - 2;
+
+  return (
+    <div className="trace-panel">
+      <div className="trace-header" onClick={() => setExpanded(!expanded)}>
+        <span className="trace-title">执行轨迹</span>
+        <span className="trace-toggle">
+          {expanded ? '▲ 收起' : `▶ 展开${hiddenCount > 0 ? ` ${hiddenCount} 条` : '详情'}`}
+        </span>
+      </div>
+      <div className="trace-list">
+        {visibleTraces.map((trace, i) => (
+          <TraceItem key={i} trace={trace} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function ChatMessage({ role, content, intent, isStreaming = false, imageUrl = null, traces = [] }) {
   const intentConfig = intent ? INTENT_CONFIG[intent] || INTENT_CONFIG.general : null;
 
   const formattedContent = useMemo(() => formatContent(content), [content]);
@@ -74,6 +119,21 @@ export default function ChatMessage({ role, content, intent, isStreaming = false
             <span>{intentConfig.label}</span>
           </div>
         )}
+        {isStreaming && traces.length === 0 && (
+          <div className="trace-panel trace-panel-live">
+            <div className="trace-header">
+              <span className="trace-title">执行轨迹</span>
+              <span className="trace-toggle">进行中...</span>
+            </div>
+            <div className="trace-list">
+              <div className="trace-item trace-item-live">
+                <span className="trace-icon">●</span>
+                <span className="trace-message">正在识别意图、路由节点并生成回复</span>
+              </div>
+            </div>
+          </div>
+        )}
+        <TracePanel traces={traces} />
         <div className="chat-message-bubble assistant">
           {isStreaming && !content ? (
             <span className="chat-streaming-cursor" />

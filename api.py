@@ -2,7 +2,10 @@ import sys
 sys.path.insert(0, ".")
 import uuid
 import base64
+import json
+import os
 from pathlib import Path
+import psycopg
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -10,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
-from agent.graph import create_workflow, default_checkpointer
+from agent.graph import create_workflow, default_checkpointer, get_async_default_checkpointer
 from agent.memory import get_memory_agent
 from agent.llm import get_llm
 from contextlib import asynccontextmanager
@@ -34,6 +37,14 @@ async def lifespan(app):
         print("[Startup] 检索器预热完成")
 
     threading.Thread(target=_warmup, daemon=True).start()
+
+    # 初始化异步 checkpointer 和 async graph（延迟到 startup 时做）
+    global app_obj_async
+    from agent.graph import create_workflow
+    async_checkpointer = await get_async_default_checkpointer()
+    app_obj_async = create_workflow(checkpointer=async_checkpointer)
+    print("[Startup] Async workflow initialized")
+
     yield
 
 
@@ -51,8 +62,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局 workflow（使用 PostgreSQL checkpointer）
+# 全局 workflow（同步 checkpointer）
 app_obj = create_workflow(checkpointer=default_checkpointer)
+# 异步 workflow（延迟初始化，在 lifespan 里创建）
+app_obj_async = None
 memory_agent = get_memory_agent()
 
 # 上传目录
@@ -63,6 +76,32 @@ app.mount("/uploads/images", StaticFiles(directory=str(UPLOAD_DIR)), name="uploa
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+STREAM_NODE_NAMES = {
+    "check_profile",
+    "init_daily_stats",
+    "classify_intent",
+    "food_generate",
+    "workout_generate",
+    "stats_node",
+    "recipe_node",
+    "profile_node",
+    "general_node",
+    "confirm_node",
+    "confirm_recovery",
+    "commit_node",
+    "food_workout_fanout",
+    "food_stats_fanout",
+    "workout_stats_fanout",
+    "food_branch",
+    "workout_branch",
+    "stats_branch",
+    "multi_join_node",
+}
+
+
+def _sse_json(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 # ============ 请求/响应模型 ============
@@ -150,6 +189,35 @@ async def test_stream():
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+@app.get("/test/stream-trace")
+async def test_stream_trace():
+    """测试 SSE trace 事件是否实时到达前端"""
+    async def generate():
+        import asyncio
+        stages = [
+            ("classification", None, "正在识别用户意图..."),
+            ("routing", None, "路由到 recipe_node"),
+            ("node_start", "recipe_node", "正在生成推荐食谱..."),
+            ("node_end", "recipe_node", "执行完成"),
+            ("final", None, "开始生成回复"),
+        ]
+        for stage, node, message in stages:
+            payload = {"type": "trace", "stage": stage, "message": message}
+            if node:
+                payload["node"] = node
+            yield _sse_json(payload)
+            await asyncio.sleep(0.3)
+
+        # 流式文本
+        text = "这是一段测试回复，用来验证流式输出。"
+        for char in text:
+            yield _sse_json({"type": "text", "content": char})
+            await asyncio.sleep(0.03)
+
+        yield f"data: [DONE]\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 # ============ 对话接口（API 变薄，逻辑交给 graph）============
 
 def _build_graph_input(request: ChatRequest, restored_state: dict) -> dict:
@@ -210,6 +278,8 @@ def _build_graph_input(request: ChatRequest, restored_state: dict) -> dict:
 def _post_graph_memory(state: dict, request: ChatRequest, config: dict) -> None:
     """Graph 执行后的记忆处理（side effect，不影响主流程）"""
     try:
+        from agent.graph import trim_state
+        trim_state(state)
         memory_agent.add_conversation_turn(state, request.message, state.get("final_response") or state.get("response", ""))
         memory_agent.extract_and_save_preferences(request.message)
         if memory_agent.should_summarize(state, threshold=10):
@@ -226,6 +296,40 @@ def _post_graph_memory(state: dict, request: ChatRequest, config: dict) -> None:
         print(f"[Warning] Memory processing failed: {e}")
 
 
+def _delete_checkpoint(thread_id: str) -> None:
+    """删除指定 thread_id 的损坏 checkpoint"""
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        return
+    try:
+        conn = psycopg.connect(db_url, autocommit=True)
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM checkpointer.checkpoints WHERE thread_id = %s",
+            (thread_id,)
+        )
+        cur.close()
+        conn.close()
+        print(f"[Checkpoint] Deleted corrupt checkpoint for thread_id={thread_id}")
+    except Exception as e:
+        print(f"[Checkpoint] Failed to delete corrupt checkpoint: {e}")
+
+
+def _try_restore_state(thread_id: str, config: dict) -> dict:
+    """尝试恢复 checkpointer 状态，损坏时删除后返回空 dict"""
+    try:
+        current_state = app_obj.get_state(config=config)
+        if current_state is not None:
+            return getattr(current_state, 'values', None) or {}
+        return {}
+    except Exception as e:
+        if "invalid memory alloc request" in str(e):
+            print(f"[Checkpoint] Corrupt checkpoint detected for thread_id={thread_id}, deleting...")
+            _delete_checkpoint(thread_id)
+            return {}
+        raise
+
+
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """
@@ -238,11 +342,9 @@ async def chat_stream(request: ChatRequest):
     thread_id = request.conversation_id or "default"
     config = {"configurable": {"thread_id": thread_id}}
 
-    # 恢复 checkpointer 状态
+    # 恢复 checkpointer 状态（自动检测并清除损坏的 checkpoint）
     try:
-        current_state = app_obj.get_state(config=config)
-        if current_state is not None:
-            state_data = getattr(current_state, 'values', None) or {}
+        state_data = _try_restore_state(thread_id, config)
     except Exception:
         state_data = {}
 
@@ -250,54 +352,114 @@ async def chat_stream(request: ChatRequest):
 
     async def generate():
         try:
-            # 发送会话标识和初始意图
-            intent = graph_input.get("intent", "general")
-            pending_conf = graph_input.get("pending_confirmation") or {}
-            has_pending = bool(pending_conf.get("action"))
-            yield f"data: {{\"type\": \"session\", \"thread_id\": \"{thread_id}\"}}\n\n"
-            yield f"data: {{\"type\": \"intent\", \"intent\": \"{intent}\"}}\n\n"
-            if has_pending:
-                action = pending_conf.get("action", "")
-                yield f"data: {{\"type\": \"confirm_pending\", \"action\": \"{action}\"}}\n\n"
+            # 发送会话标识
+            yield _sse_json({"type": "session", "thread_id": thread_id})
 
-            # 直接调用 graph.invoke() 完整执行一次，拿到最终状态
-            result = app_obj.invoke(graph_input, config=config)
+            # 使用同步 stream：在这个项目里 custom trace 更能实时吐出
+            current_state = dict(graph_input)
+            route_emitted = False
+            intent_emitted = False
+            final_response = ""
+            committed = None
+            last_node_name = None
 
-            # 从最终状态提取响应和路由信息
-            final_response = (
-                result.get("final_response")
-                or result.get("response")
-                or ""
-            )
-            committed = result.get("pending_confirmation", {}).get("confirmed")
-            route_decision = result.get("route_decision", "")
+            for chunk in app_obj.stream(
+                graph_input,
+                config=config,
+                stream_mode=["updates", "custom"],
+                version="v2",
+            ):
+                if isinstance(chunk, tuple) and len(chunk) == 2:
+                    chunk_type, data = chunk
+                elif isinstance(chunk, dict):
+                    chunk_type = chunk.get("type")
+                    data = chunk.get("data")
+                else:
+                    continue
 
-            # 节点路由事件（体现 graph 执行了哪些节点）
-            if route_decision:
-                yield f"data: {{\"type\": \"node\", \"node\": \"{route_decision}\"}}\n\n"
+                if chunk_type == "custom":
+                    if isinstance(data, dict):
+                        if data.get("type") == "intent":
+                            intent_val = data.get("intent", "general")
+                            if not intent_emitted:
+                                yield _sse_json({"type": "intent", "intent": intent_val})
+                                intent_emitted = True
+                        elif data.get("type") == "trace":
+                            # trace 事件实时发出
+                            yield _sse_json(data)
+                    continue
+
+                if chunk_type != "updates" or not isinstance(data, dict):
+                    continue
+
+                for node_name, update in data.items():
+                    if isinstance(update, dict):
+                        current_state.update(update)
+
+                    if node_name == "classify_intent":
+                        intent_val = current_state.get("intent", "general")
+                        if not intent_emitted:
+                            yield _sse_json({"type": "intent", "intent": intent_val})
+                            intent_emitted = True
+                    elif node_name in STREAM_NODE_NAMES:
+                        if not route_emitted and node_name not in {"check_profile", "classify_intent"}:
+                            yield _sse_json({
+                                "type": "trace",
+                                "stage": "routing",
+                                "message": f"路由到 {node_name}",
+                            })
+                            route_emitted = True
+                        last_node_name = node_name
+
+                    final_response = (
+                        current_state.get("final_response")
+                        or current_state.get("response")
+                        or final_response
+                    )
+                    committed = current_state.get("pending_confirmation", {}).get("confirmed")
+
+                # 让 ASGI 事件循环有机会立即刷出当前 SSE 片段
+                import asyncio
+                await asyncio.sleep(0)
+
+            # 确保 intent 和路由事件最终发出
+            if not intent_emitted:
+                intent_val = current_state.get("intent", "general")
+                yield _sse_json({"type": "intent", "intent": intent_val})
+
+            route_decision = current_state.get("route_decision") or last_node_name or "general_node"
+            if not route_emitted:
+                yield _sse_json({
+                    "type": "trace",
+                    "stage": "routing",
+                    "message": f"路由到 {route_decision}",
+                })
+
             if committed is True:
-                yield f"data: {{\"type\": \"commit\", \"result\": \"confirmed\"}}\n\n"
+                yield _sse_json({"type": "commit", "result": "confirmed"})
             elif committed is False:
-                yield f"data: {{\"type\": \"commit\", \"result\": \"cancelled\"}}\n\n"
+                yield _sse_json({"type": "commit", "result": "cancelled"})
 
-            # 流式输出最终文本（SSE）
+            # 流式输出最终文本
             if final_response:
                 for char in final_response:
-                    yield f"data: {{\"type\": \"text\", \"content\": \"{char}\"}}\n\n"
+                    yield _sse_json({"type": "text", "content": char})
+
             yield f"data: [DONE]\n\n"
 
             # Graph 执行后的记忆处理
             import asyncio
-            memory_task = asyncio.create_task(_run_post_graph_memory(result, request, config))
+            memory_task = asyncio.create_task(_run_post_graph_memory(current_state, request, config))
             memory_task.add_done_callback(
                 lambda t: print(f"[Memory] 记忆处理完成: {t.result()}") if not t.cancelled() and t.exception() is None else print(f"[Memory] 记忆处理失败: {t.exception()}")
             )
+            return
 
         except Exception as e:
             import traceback
             traceback.print_exc()
             error_msg = f"错误: {str(e)}"
-            yield f"data: {{\"type\": \"error\", \"message\": \"{error_msg}\"}}\n\n"
+            yield _sse_json({"type": "error", "message": error_msg})
             yield f"data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -306,6 +468,8 @@ async def chat_stream(request: ChatRequest):
 async def _run_post_graph_memory(result_state: dict, request: ChatRequest, config: dict) -> str:
     """异步执行记忆处理（不阻塞 SSE 流）"""
     try:
+        from agent.graph import trim_state
+        trim_state(result_state)
         response_text = (
             result_state.get("final_response")
             or result_state.get("response", "")
@@ -339,11 +503,9 @@ async def chat(request: ChatRequest):
     thread_id = request.conversation_id or "default"
     config = {"configurable": {"thread_id": thread_id}}
 
-    # 恢复 checkpointer 状态
+    # 恢复 checkpointer 状态（自动检测并清除损坏的 checkpoint）
     try:
-        current_state = app_obj.get_state(config=config)
-        if current_state is not None:
-            state_data = getattr(current_state, 'values', None) or {}
+        state_data = _try_restore_state(thread_id, config)
     except Exception:
         state_data = {}
 

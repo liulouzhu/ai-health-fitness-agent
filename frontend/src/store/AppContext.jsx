@@ -74,7 +74,8 @@ function reducer(state, action) {
             role: 'user',
             content: action.payload.content,
             imageUrl: action.payload.imageUrl || null,
-            intent: null
+            intent: null,
+            traces: [],
           },
         ],
         currentIntent: null,
@@ -85,9 +86,19 @@ function reducer(state, action) {
         ...state,
         messages: [
           ...state.messages,
-          { id: Date.now(), role: 'assistant', content: '', intent: state.currentIntent },
+          { id: Date.now(), role: 'assistant', content: '', intent: state.currentIntent, traces: [] },
         ],
         currentIntent: null,
+      };
+    case 'CHAT_SET_LAST_ASSISTANT_INTENT':
+      return {
+        ...state,
+        currentIntent: action.payload,
+        messages: state.messages.map((m, i) =>
+          i === state.messages.length - 1 && m.role === 'assistant'
+            ? { ...m, intent: action.payload }
+            : m
+        ),
       };
     case 'CHAT_SET_STREAMING':
       return {
@@ -111,6 +122,15 @@ function reducer(state, action) {
       return { ...state, isStreaming: false, streamingError: action.payload };
     case 'CHAT_CLEAR':
       return { ...state, messages: [], currentIntent: null };
+    case 'CHAT_ADD_TRACE':
+      return {
+        ...state,
+        messages: state.messages.map((m, i) =>
+          i === state.messages.length - 1 && m.role === 'assistant'
+            ? { ...m, traces: [...(m.traces || []), action.payload] }
+            : m
+        ),
+      };
 
     case 'SET_VIEW':
       return { ...state, activeView: action.payload };

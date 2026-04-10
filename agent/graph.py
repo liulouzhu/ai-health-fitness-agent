@@ -12,6 +12,8 @@ from agent.multi_agent import (
     multi_join_node
 )
 from agent.memory import get_memory_agent
+from agent.stream_utils import emit_trace
+from config import AgentConfig
 from datetime import datetime
 import os
 
@@ -26,6 +28,7 @@ def log_node(node_name: str):
 # ============ Checkpointer ============
 
 _postgres_cm = None
+_postgres_async_cm = None
 
 
 def get_postgres_checkpointer():
@@ -44,19 +47,90 @@ def get_postgres_checkpointer():
     return saver
 
 
+async def get_async_postgres_checkpointer():
+    """创建异步 PostgreSQL checkpointer（用于 astream）
+
+    使用 langgraph_checkpoint_postgres 的 AsyncPostgresSaver。
+    必须异步初始化（__aenter__ 是异步的）。
+    """
+    global _postgres_async_cm
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError("DATABASE_URL environment variable is not set")
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    _postgres_async_cm = AsyncPostgresSaver.from_conn_string(db_url)
+    saver = await _postgres_async_cm.__aenter__()
+    await saver.setup()
+    return saver
+
+
 def get_memory_checkpointer():
     """创建内存 checkpointer（仅用于测试或临时使用）"""
     from langgraph.checkpoint.memory import InMemorySaver
     return InMemorySaver()
 
 
-# 默认 checkpointer（生产用 PostgreSQL，失败则内存）
+# 同步 checkpointer（用于 stream）
 try:
     default_checkpointer = get_postgres_checkpointer()
 except Exception as e:
     print(f"[Warning] PostgreSQL checkpointer init failed: {e}")
     print("[Warning] Falling back to InMemorySaver (state will be lost on restart)")
     default_checkpointer = get_memory_checkpointer()
+
+# 异步 checkpointer（用于 astream）- 延迟初始化，需先 await 初始化
+_async_checkpointer = None
+
+
+async def get_async_default_checkpointer():
+    """获取异步 checkpointer（延迟初始化，只初始化一次）"""
+    global _async_checkpointer
+    if _async_checkpointer is not None:
+        return _async_checkpointer
+    try:
+        _async_checkpointer = await get_async_postgres_checkpointer()
+        print("[Async Checkpointer] AsyncPostgresSaver initialized")
+        return _async_checkpointer
+    except Exception as e:
+        print(f"[Warning] Async PostgreSQL checkpointer init failed: {e}")
+        print("[Warning] Using InMemorySaver for astream (state will be lost on restart)")
+        _async_checkpointer = get_memory_checkpointer()
+        return _async_checkpointer
+
+
+def trim_state(state: AgentState) -> None:
+    """
+    裁剪 state 中可能导致 checkpoint 过大的字段。
+    在节点入口和 checkpoint 写入前调用。
+    """
+    # 1. messages 滑动窗口裁剪
+    messages = state.get("messages", [])
+    if len(messages) > AgentConfig.MAX_RECENT_MESSAGES:
+        state["messages"] = messages[-AgentConfig.MAX_RECENT_MESSAGES:]
+
+    # 2. summary_buffer 裁剪
+    summary_buffer = state.get("summary_buffer", [])
+    if len(summary_buffer) > AgentConfig.MAX_RECENT_MESSAGES:
+        state["summary_buffer"] = summary_buffer[-AgentConfig.MAX_RECENT_MESSAGES:]
+
+    # 3. 清空 image_info（base64 data URL 已在节点内使用完毕，无需持久化）
+    image_info = state.get("image_info", {})
+    if image_info.get("image_url"):
+        state["image_info"] = {"has_image": bool(image_info.get("has_image")), "image_url": ""}
+
+    # 4. 清空过大的 response/final_response（流式输出后不再需要完整副本）
+    for key in ("response", "final_response"):
+        val = state.get(key, "")
+        if isinstance(val, str) and len(val) > 5000:
+            state[key] = val[:5000] + "...(trimmed)"
+
+    # 5. 清空 agent 原始结果（join 后不再需要）
+    for key in ("food_result", "workout_result", "stats_result", "recipe_result"):
+        state.pop(key, None)
+
+
+# 别名兼容旧代码
+_cap_checkpoint_size = trim_state
 
 
 # ============ 路由函数 ============
@@ -172,78 +246,92 @@ def profile_check_route(state: AgentState) -> str:
 def init_daily_stats_node(state: AgentState) -> AgentState:
     """初始化每日统计节点"""
     log_node("init_daily_stats")
+    emit_trace("node_start", "init_daily_stats", "正在加载今日统计...")
+    # 入图时压缩 checkpoint 体积，防止 PostgreSQL 单条记录超限
+    _cap_checkpoint_size(state)
     state["route_decision"] = "init_daily_stats"
     memory_agent = get_memory_agent()
     today = datetime.now().strftime("%Y-%m-%d")
     stats = memory_agent.load_daily_stats(today)
     state["daily_stats"] = stats
+    emit_trace("node_end", "init_daily_stats", "执行完成")
     return state
 
 
 def food_generate_node(state: AgentState) -> AgentState:
-    """食物分析 + 生成候选结果节点
-
-    负责：
-    1. 检索/分析食物
-    2. 提取营养数据
-    3. 生成候选记录
-    4. 设置 requires_confirmation
-    5. 写入 final_response（待确认提示文本）
-    """
+    """食物分析 + 生成候选结果节点"""
     log_node("food_generate")
+    emit_trace("node_start", "food_generate", "正在分析食物营养成分...")
     state["route_decision"] = "food_generate"
     food_agent = FoodAgent()
     state = food_agent.run(state)
+    emit_trace("node_end", "food_generate", "执行完成")
+    trim_state(state)
     return state
 
 
 def workout_generate_node(state: AgentState) -> AgentState:
     """运动指导 + 生成候选结果节点"""
     log_node("workout_generate")
+    emit_trace("node_start", "workout_generate", "正在生成运动方案...")
     state["route_decision"] = "workout_generate"
     workout_agent = WorkoutAgent()
     state = workout_agent.run(state)
+    emit_trace("node_end", "workout_generate", "执行完成")
+    trim_state(state)
     return state
 
 
 def stats_node(state: AgentState) -> AgentState:
     """统计查询节点"""
     log_node("stats_node")
+    emit_trace("node_start", "stats_node", "正在查询今日统计...")
     state["route_decision"] = "stats_node"
     memory_agent = get_memory_agent()
     summary = memory_agent.get_daily_summary()
     state["final_response"] = summary
     state["response"] = summary
+    emit_trace("node_end", "stats_node", "执行完成")
+    trim_state(state)
     return state
 
 
 def recipe_node(state: AgentState) -> AgentState:
     """食谱推荐节点"""
     log_node("recipe_node")
+    emit_trace("node_start", "recipe_node", "正在生成推荐食谱...")
     state["route_decision"] = "recipe_node"
     recipe_agent = RecipeAgent()
     state = recipe_agent.run(state)
     state["final_response"] = state.get("response")
+    emit_trace("node_end", "recipe_node", "执行完成")
+    trim_state(state)
     return state
 
 
 def profile_node(state: AgentState) -> AgentState:
     """档案更新节点"""
     log_node("profile_node")
+    emit_trace("node_start", "profile_node", "正在更新用户档案...")
     state["route_decision"] = "profile_node"
     router = RouterAgent()
     state = router.handle_profile_update(state)
     state["final_response"] = state.get("response")
+    emit_trace("node_end", "profile_node", "执行完成")
+    trim_state(state)
     return state
 
 
 def general_node(state: AgentState) -> AgentState:
     """通用对话节点"""
     log_node("general_node")
+    emit_trace("node_start", "general_node", "正在思考回复...")
     state["route_decision"] = "general_node"
     router = RouterAgent()
     state = router.handle_general(state)
     state["final_response"] = state.get("response")
+    emit_trace("node_end", "general_node", "执行完成")
+    trim_state(state)
     return state
 
 
@@ -254,6 +342,7 @@ def confirm_node(state: AgentState) -> AgentState:
     routing_func 根据 pending_confirmation.confirmed 是否为 None 判断是否在等待回复
     """
     log_node("confirm_node")
+    emit_trace("node_start", "confirm_node", "正在处理确认请求...")
     state["route_decision"] = "confirm_node"
 
     pending_conf = state.get("pending_confirmation") or {}
@@ -271,7 +360,7 @@ def confirm_node(state: AgentState) -> AgentState:
             "action": "log_meal",
             "candidate_meal": candidate_meal,
             "candidate_workout": None,
-            "analysis_text": analysis,
+            "analysis_text": "（待确认食物记录）",
             "confirmed": None,
         }
         state["final_response"] = (
@@ -284,7 +373,7 @@ def confirm_node(state: AgentState) -> AgentState:
             "action": "log_workout",
             "candidate_meal": None,
             "candidate_workout": candidate_workout,
-            "analysis_text": analysis,
+            "analysis_text": "（待确认运动记录）",
             "confirmed": None,
         }
         state["final_response"] = (
@@ -298,7 +387,7 @@ def confirm_node(state: AgentState) -> AgentState:
             "action": "log_both",
             "candidate_meal": candidate_meal,
             "candidate_workout": candidate_workout,
-            "analysis_text": f"{food_analysis}\n\n{workout_analysis}",
+            "analysis_text": "（待确认食物+运动记录）",
             "confirmed": None,
         }
         state["final_response"] = (
@@ -312,12 +401,15 @@ def confirm_node(state: AgentState) -> AgentState:
         state["requires_confirmation"] = False
 
     state["response"] = state["final_response"]
+    emit_trace("node_end", "confirm_node", "执行完成")
+    trim_state(state)
     return state
 
 
 def commit_node(state: AgentState) -> AgentState:
     """提交节点 - 将确认后的记录写入 daily_stats"""
     log_node("commit_node")
+    emit_trace("node_start", "commit_node", "正在提交记录...")
     state["route_decision"] = "commit_node"
     memory_agent = get_memory_agent()
     pending_conf = state.get("pending_confirmation", {})
@@ -358,6 +450,8 @@ def commit_node(state: AgentState) -> AgentState:
     except Exception:
         pass
 
+    emit_trace("node_end", "commit_node", "执行完成")
+    trim_state(state)
     return state
 
 
@@ -368,6 +462,7 @@ def confirm_recovery_node(state: AgentState) -> AgentState:
     设置 pending_confirmation.confirmed 标志，然后流向 commit_node。
     """
     log_node("confirm_recovery")
+    emit_trace("node_start", "confirm_recovery", "正在处理确认回复...")
     state["route_decision"] = "confirm_recovery"
 
     # 从 state 读取用户原始输入
@@ -396,6 +491,8 @@ def confirm_recovery_node(state: AgentState) -> AgentState:
         state["final_response"] = "请回复 是（确认）或 否（取消）。"
         state["response"] = state["final_response"]
 
+    emit_trace("node_end", "confirm_recovery", "执行完成")
+    trim_state(state)
     return state
 
 

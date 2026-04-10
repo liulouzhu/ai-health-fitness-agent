@@ -1,7 +1,8 @@
 .app {
   display: flex;
   flex-direction: column;
-  min-height: 100dvh;
+  height: 100vh;
+  overflow: hidden;
   background: var(--color-bg);
 }
 
@@ -10,7 +11,8 @@
   display: flex;
   flex: 1;
   overflow: hidden;
-  height: calc(100dvh - var(--header-height));
+  min-height: 0;
+  height: calc(100vh - var(--header-height));
 }
 
 /* ── 主内容区 ── */
@@ -21,6 +23,7 @@
   overflow: hidden;
   min-width: 0;
   min-height: 0;
+  height: 100%;
 }
 
 /* ── 右侧边栏 ── */
@@ -31,14 +34,14 @@
   background: var(--color-bg-sidebar);
   overflow-y: auto;
   min-height: 0;
-  max-height: calc(100dvh - var(--header-height));
+  max-height: calc(100vh - var(--header-height));
 }
 
 /* ── 移动端 ── */
 @media (max-width: 768px) {
   .app-body {
     flex-direction: column;
-    height: calc(100dvh - var(--header-height));
+    height: calc(100vh - var(--header-height));
     overflow: hidden;
   }
 

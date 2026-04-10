@@ -2,11 +2,10 @@
 
 import os
 import re
-import tempfile
 from pathlib import Path
 from datetime import datetime
 
-from agent.memory.base import MemoryAgentBase, DAILY_STATS_PATH, PENDING_STATS_FILE, MEAL_ENTRY_TEMPLATE, WORKOUT_ENTRY_TEMPLATE, DAILY_STATS_TEMPLATE
+from agent.memory.base import MemoryAgentBase, DAILY_STATS_PATH, PENDING_STATS_FILE, MEAL_ENTRY_TEMPLATE, WORKOUT_ENTRY_TEMPLATE, DAILY_STATS_TEMPLATE, _memory_lock
 from config import AgentConfig
 
 
@@ -145,34 +144,35 @@ class DailyStatsManager(MemoryAgentBase):
         )
 
         file_path = self._get_daily_stats_path(stats.get("date"))
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        with _memory_lock:
+            self._atomic_write(file_path, content)
 
     def update_daily_stats(self, entry_type: str, entry: dict) -> dict:
-        """更新每日统计
+        """更新每日统计（整个 load-modify-write 在同一锁内完成，避免并发覆盖）
 
         Args:
             entry_type: "meal" 或 "workout"
             entry: {"name": "午餐", "calories": 500, "protein": 30} 或
                    {"type": "跑步", "duration": 30, "calories": 300}
         """
-        today = datetime.now().strftime("%Y-%m-%d")
-        stats = self.load_daily_stats(today)
+        with _memory_lock:
+            today = datetime.now().strftime("%Y-%m-%d")
+            stats = self.load_daily_stats(today)
 
-        if entry_type == "meal":
-            stats["consumed_calories"] += int(entry.get("calories", 0))
-            stats["consumed_protein"] += float(entry.get("protein", 0))
-            stats["consumed_fat"] += float(entry.get("fat", 0))
-            stats["consumed_carbs"] += float(entry.get("carbs", 0))
-            stats["meals"].append(entry)
-        elif entry_type == "workout":
-            stats["burned_calories"] += int(entry.get("calories", 0))
-            stats["workouts"].append(entry)
+            if entry_type == "meal":
+                stats["consumed_calories"] += int(entry.get("calories", 0))
+                stats["consumed_protein"] += float(entry.get("protein", 0))
+                stats["consumed_fat"] += float(entry.get("fat", 0))
+                stats["consumed_carbs"] += float(entry.get("carbs", 0))
+                stats["meals"].append(entry)
+            elif entry_type == "workout":
+                stats["burned_calories"] += int(entry.get("calories", 0))
+                stats["workouts"].append(entry)
 
-        # 加载profile用于计算剩余
-        profile = self.load_profile()
-        self.save_daily_stats(stats, profile)
-        return stats
+            # 加载profile用于计算剩余
+            profile = self.load_profile()
+            self.save_daily_stats(stats, profile)
+            return stats
 
     def get_daily_summary(self) -> str:
         """获取今日摘要"""
@@ -208,17 +208,8 @@ class DailyStatsManager(MemoryAgentBase):
 
     def save_pending_stats(self, pending: dict) -> None:
         """保存待确认数据到临时文件（原子写入）"""
-        dir_path = os.path.dirname(PENDING_STATS_FILE) or "memory"
-        Path(dir_path).mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                import json
-                json.dump(pending, f, ensure_ascii=False)
-            Path(tmp_path).replace(PENDING_STATS_FILE)
-        except Exception:
-            Path(tmp_path).unlink(missing_ok=True)
-            raise
+        import json
+        self._atomic_write(PENDING_STATS_FILE, json.dumps(pending, ensure_ascii=False))
 
     def load_pending_stats(self) -> dict:
         """加载待确认数据"""

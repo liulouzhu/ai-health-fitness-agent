@@ -8,7 +8,7 @@
 - summarization.py: 对话摘要缓冲
 """
 
-from agent.memory.base import MemoryAgentBase
+from agent.memory.base import MemoryAgentBase, MEMORY_PATH, PREFERENCES_PATH
 from agent.memory.profile_manager import ProfileManager
 from agent.memory.daily_stats import DailyStatsManager
 from agent.memory.preferences import PreferencesManager, classify_preference_signal, PENDING_PREFERENCES_FILE, SIGNAL_TYPES

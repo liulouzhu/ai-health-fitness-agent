@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-from agent.memory.base import MemoryAgentBase, PREFERENCES_PATH, PENDING_PREFERENCES_FILE
+from agent.memory.base import MemoryAgentBase, PREFERENCES_PATH, PENDING_PREFERENCES_FILE, _memory_lock
 
 
 # ============ 偏好信号分类器 ============
@@ -285,31 +285,36 @@ class PreferencesManager(MemoryAgentBase):
         return "\n".join(lines)
 
     def save_preferences(self, prefs: dict) -> None:
-        """保存用户偏好"""
+        """保存用户偏好（线程安全 + 原子写入）"""
         Path(PREFERENCES_PATH).parent.mkdir(parents=True, exist_ok=True)
-        with open(PREFERENCES_PATH, "w", encoding="utf-8") as f:
-            f.write(self._preferences_to_markdown(prefs))
+        content = self._preferences_to_markdown(prefs)
+        with _memory_lock:
+            self._atomic_write(PREFERENCES_PATH, content)
 
     # ============ 偏好批量整合 ============
 
     def _ensure_pending_preferences_file(self) -> None:
-        """确保待整合文件存在"""
+        """确保待整合文件存在（线程安全初始化：检查存在性 + 原子写入初始内容）
+
+        注意：即使两个请求同时发现文件不存在，_atomic_write 的幂等性也保证
+        不会写出坏 JSON。_atomic_write 本身受 _memory_lock 保护。
+        """
         Path(PENDING_PREFERENCES_FILE).parent.mkdir(parents=True, exist_ok=True)
         if not os.path.exists(PENDING_PREFERENCES_FILE):
-            with open(PENDING_PREFERENCES_FILE, "w", encoding="utf-8") as f:
-                json.dump({"pending_messages": [], "last_consolidation_count": 0}, f)
+            initial = json.dumps({"pending_messages": [], "last_consolidation_count": 0})
+            with _memory_lock:
+                # 双重检查：持有锁后再次确认，避免另一请求已创建
+                if not os.path.exists(PENDING_PREFERENCES_FILE):
+                    self._atomic_write(PENDING_PREFERENCES_FILE, initial)
 
     def add_pending_preference(self, user_message: str, signal_info: dict = None) -> None:
-        """添加用户消息到待整合缓冲区
+        """添加用户消息到待整合缓冲区（线程安全 read-modify-write）
 
         Args:
             user_message: 用户消息
             signal_info: 分类器返回的信号信息，可选（向后兼容）
         """
         self._ensure_pending_preferences_file()
-
-        with open(PENDING_PREFERENCES_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
 
         entry = {
             "timestamp": datetime.now().isoformat(),
@@ -320,10 +325,11 @@ class PreferencesManager(MemoryAgentBase):
             entry["confidence"] = signal_info.get("confidence", 0.0)
             entry["reason"] = signal_info.get("reason", "")
 
-        data["pending_messages"].append(entry)
-
-        with open(PENDING_PREFERENCES_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with _memory_lock:
+            with open(PENDING_PREFERENCES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["pending_messages"].append(entry)
+            self._atomic_write(PENDING_PREFERENCES_FILE, json.dumps(data, ensure_ascii=False, indent=2))
 
     def should_consolidate_preferences(self) -> bool:
         """检查是否应该触发偏好整合（达到阈值）"""
@@ -336,33 +342,38 @@ class PreferencesManager(MemoryAgentBase):
         return pending_count >= CONSOLIDATION_THRESHOLD
 
     def consolidate_preferences(self, force: bool = False) -> dict | None:
-        """批量整合待处理的偏好消息（只调用一次 LLM）"""
-        self._ensure_pending_preferences_file()
+        """批量整合待处理的偏好消息（整个过程在同一锁内完成，避免并发写入覆盖）
 
-        with open(PENDING_PREFERENCES_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        注意：由于包含 LLM 调用，持有锁的时间较长，但 pending 文件本身
+        写入频率低（每 N 条消息一次），因此可接受。
+        """
+        with _memory_lock:
+            self._ensure_pending_preferences_file()
 
-        pending_messages = data["pending_messages"]
-        if not pending_messages:
-            return None
+            with open(PENDING_PREFERENCES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-        # 检查是否达到阈值（除非强制整合）
-        if not force and len(pending_messages) < CONSOLIDATION_THRESHOLD:
-            return None
+            pending_messages = data["pending_messages"]
+            if not pending_messages:
+                return None
 
-        # 构建消息文本（包含信号类型，供 LLM 参考权重）
-        # 格式：[信号类型@置信度] 内容
-        messages_text = "\n".join([
-            f"[{msg.get('signal_type', 'unknown')}@{msg.get('confidence', 0.0):.2f}] {msg['content']}"
-            for msg in pending_messages
-        ])
+            # 检查是否达到阈值（除非强制整合）
+            if not force and len(pending_messages) < CONSOLIDATION_THRESHOLD:
+                return None
 
-        # 获取当前偏好作为上下文
-        current_prefs = self.load_preferences()
-        current_prefs_text = json.dumps(current_prefs, ensure_ascii=False, indent=2)
+            # 构建消息文本（包含信号类型，供 LLM 参考权重）
+            # 格式：[信号类型@置信度] 内容
+            messages_text = "\n".join([
+                f"[{msg.get('signal_type', 'unknown')}@{msg.get('confidence', 0.0):.2f}] {msg['content']}"
+                for msg in pending_messages
+            ])
 
-        # 调用一次 LLM 整合所有消息
-        prompt = """你是一个偏好整合专家。请从以下多条用户消息中整合出完整的用户偏好。
+            # 获取当前偏好作为上下文
+            current_prefs = self.load_preferences()
+            current_prefs_text = json.dumps(current_prefs, ensure_ascii=False, indent=2)
+
+            # 调用一次 LLM 整合所有消息
+            prompt = """你是一个偏好整合专家。请从以下多条用户消息中整合出完整的用户偏好。
 
 信号类型说明：
 - hard_preference: 明确的过敏、忌口、不能吃、受伤等硬约束（最高优先级，必须采纳）
@@ -398,35 +409,35 @@ class PreferencesManager(MemoryAgentBase):
 2. 只新增新发现的硬偏好或软偏好，行为信号（behavior_signal）作为辅助参考
 3. 对类似的信息进行去重合并
 4. 不要把单次行为记录（如"我吃了一个鸡蛋"）当作偏好，除非该消息本身是 hard_preference 或 soft_preference""".format(
-            current_preferences=current_prefs_text,
-            messages=messages_text
-        )
+                current_preferences=current_prefs_text,
+                messages=messages_text
+            )
 
-        try:
-            response = self.llm.invoke([{"role": "user", "content": prompt}])
-            consolidated = self._extract_json_from_response(response.content)
+            try:
+                response = self.llm.invoke([{"role": "user", "content": prompt}])
+                consolidated = self._extract_json_from_response(response.content)
 
-            if not consolidated:
-                return {"success": False, "reason": "LLM 返回格式错误"}
+                if not consolidated:
+                    return {"success": False, "reason": "LLM 返回格式错误"}
 
-            # 合并到现有偏好
-            self._merge_preferences(consolidated)
+                # 合并到现有偏好（_merge_preferences 内部会调用 save_preferences，
+                # save_preferences 也会再次获取 _memory_lock，但因为是 RLock 所以可重入）
+                self._merge_preferences(consolidated)
 
-            # 清空 pending buffer，更新计数
-            data["pending_messages"] = []
-            data["last_consolidation_count"] = self.get_message_count()
+                # 清空 pending buffer，记录本次整合的消息数量
+                consolidated_count = len(pending_messages)
+                data["pending_messages"] = []
+                data["last_consolidation_count"] = consolidated_count
+                self._atomic_write(PENDING_PREFERENCES_FILE, json.dumps(data, ensure_ascii=False, indent=2))
 
-            with open(PENDING_PREFERENCES_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                return {
+                    "success": True,
+                    "consolidated_count": consolidated_count,
+                    "preferences": consolidated
+                }
 
-            return {
-                "success": True,
-                "consolidated_count": len(pending_messages),
-                "preferences": consolidated
-            }
-
-        except Exception as e:
-            return {"success": False, "reason": str(e)}
+            except Exception as e:
+                return {"success": False, "reason": str(e)}
 
     def _merge_preferences(self, new_prefs: dict) -> None:
         """将新的偏好合并到现有偏好（去重追加 + 冲突消解）

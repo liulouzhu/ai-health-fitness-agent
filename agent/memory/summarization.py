@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-from agent.memory.base import MemoryAgentBase, LONGTERM_MEMORY_PATH
+from agent.memory.base import MemoryAgentBase, LONGTERM_MEMORY_PATH, _memory_lock
 
 
 class SummarizationManager(MemoryAgentBase):
@@ -103,9 +103,7 @@ class SummarizationManager(MemoryAgentBase):
         return None
 
     def _append_to_longterm_memory(self, summary_data: dict, message_count: int) -> None:
-        """追加摘要到长期记忆文件"""
-        Path(LONGTERM_MEMORY_PATH).parent.mkdir(parents=True, exist_ok=True)
-
+        """追加摘要到长期记忆文件（线程安全 + 原子写入）"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         new_content = f"""
@@ -123,17 +121,17 @@ class SummarizationManager(MemoryAgentBase):
 **讨论主题**: {', '.join(summary_data.get('topics_discussed', []))}
 """
 
-        # 如果文件存在，读取并在开头插入
-        if os.path.exists(LONGTERM_MEMORY_PATH):
-            with open(LONGTERM_MEMORY_PATH, "r", encoding="utf-8") as f:
-                existing = f.read()
-            # 保留顶部的元信息，只更新内容部分
-            new_file_content = f"# 长期记忆\n<!-- last_summary_count:{message_count} -->\n" + new_content + "\n---\n\n" + existing
-        else:
-            new_file_content = f"# 长期记忆\n<!-- last_summary_count:{message_count} -->\n" + new_content
+        with _memory_lock:
+            # 如果文件存在，读取并在开头插入（_atomic_write 内部已确保目录存在）
+            if os.path.exists(LONGTERM_MEMORY_PATH):
+                with open(LONGTERM_MEMORY_PATH, "r", encoding="utf-8") as f:
+                    existing = f.read()
+                # 保留顶部的元信息，只更新内容部分
+                new_file_content = f"# 长期记忆\n<!-- last_summary_count:{message_count} -->\n" + new_content + "\n---\n\n" + existing
+            else:
+                new_file_content = f"# 长期记忆\n<!-- last_summary_count:{message_count} -->\n" + new_content
 
-        with open(LONGTERM_MEMORY_PATH, "w", encoding="utf-8") as f:
-            f.write(new_file_content)
+            self._atomic_write(LONGTERM_MEMORY_PATH, new_file_content)
 
     def _format_list(self, items: list) -> str:
         """格式化列表为markdown"""

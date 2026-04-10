@@ -1,7 +1,7 @@
 """用户档案管理模块"""
 
 import os
-from agent.memory.base import MemoryAgentBase, INITIAL_QUESTIONS
+from agent.memory.base import MemoryAgentBase, INITIAL_QUESTIONS, _memory_lock
 
 
 class ProfileManager(MemoryAgentBase):
@@ -22,10 +22,11 @@ class ProfileManager(MemoryAgentBase):
         return self._parse_markdown(content)
 
     def save_profile(self, profile: dict) -> None:
-        """保存用户档案"""
+        """保存用户档案（线程安全 + 原子写入）"""
         profile["updated_at"] = self._now_str()
-        with open(self.memory_path, "w", encoding="utf-8") as f:
-            f.write(self._dict_to_markdown(profile))
+        content = self._dict_to_markdown(profile)
+        with _memory_lock:
+            self._atomic_write(self.memory_path, content)
 
     def create_profile(self, answer: str) -> dict:
         """从用户回答创建档案"""
@@ -97,13 +98,25 @@ class ProfileManager(MemoryAgentBase):
         self.save_profile(current)
         return {"changed": True, "updates": updates, "profile": current}
 
+    def _normalize_value(self, value: str, mapping: dict) -> str:
+        """将中文或英文值统一为英文（通过映射表）"""
+        return mapping.get(value, value)
+
+    def _normalize_gender(self, gender: str) -> str:
+        """将中文或英文性别值统一为英文"""
+        return self._normalize_value(gender, {"男": "male", "男性": "male", "女": "female", "女性": "female"})
+
+    def _normalize_goal(self, goal: str) -> str:
+        """将中文或英文目标值统一为英文"""
+        return self._normalize_value(goal, {"减脂": "cut", "cut": "cut", "增肌": "bulk", "bulk": "bulk", "维持": "maintain", "maintain": "maintain"})
+
     def _calculate_targets(self, profile: dict) -> dict:
         """计算目标热量和蛋白质（本地计算，无需 LLM）"""
         h = profile.get("height", 0)
         w = profile.get("weight", 0)
         age = profile.get("age", 0)
-        gender = profile.get("gender", "male")
-        goal = profile.get("goal", "maintain")
+        gender = self._normalize_gender(profile.get("gender", "male"))
+        goal = self._normalize_goal(profile.get("goal", "maintain"))
 
         # 基础代谢率 (BMR)
         if gender == "male":

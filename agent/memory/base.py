@@ -3,10 +3,15 @@
 import os
 import re
 import json
+import tempfile
+import threading
 from pathlib import Path
 from datetime import datetime
 
 from agent.llm import get_llm
+
+# 模块级全局锁：保护所有 memory 文件的并发读写
+_memory_lock = threading.RLock()
 
 
 # ============ 路径常量 ============
@@ -64,13 +69,38 @@ class MemoryAgentBase:
         self._ensure_memory_file()
 
     def _ensure_memory_file(self):
-        """确保memory文件存在"""
+        """确保memory文件存在（线程安全初始化：双重检查 + 原子写入）
+
+        注意：此方法在 __init__ 中调用时尚未持有锁，所以用双重检查
+        模式（DCLP）：先快速路径检查，必要时再进入临界区。
+        """
         Path(self.memory_path).parent.mkdir(parents=True, exist_ok=True)
         if not os.path.exists(self.memory_path):
-            with open(self.memory_path, "w", encoding="utf-8") as f:
-                f.write("# 用户档案\n\n- user_id: default\n")
+            initial = "# 用户档案\n\n- user_id: default\n"
+            # 双重检查：即使两个请求同时发现文件不存在，也只有其中一个能成功写入
+            with _memory_lock:
+                if not os.path.exists(self.memory_path):
+                    self._atomic_write(self.memory_path, initial)
 
     # ============ 工具方法 ============
+
+    def _atomic_write(self, file_path: str | Path, content: str) -> None:
+        """原子写入：临时文件 + os.replace 原子替换
+
+        保证写入过程中崩溃不会留下半写文件，也不会在并发时
+        出现一个请求覆盖另一个请求的内容。
+        """
+        file_path = str(file_path)
+        dir_path = os.path.dirname(file_path) or "."
+        Path(dir_path).mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, file_path)
+        except Exception:
+            Path(tmp_path).unlink(missing_ok=True)
+            raise
 
     def _parse_markdown(self, content: str) -> dict:
         """解析markdown格式的档案"""

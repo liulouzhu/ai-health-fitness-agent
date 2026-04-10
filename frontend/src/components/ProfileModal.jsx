@@ -15,7 +15,7 @@ const GOAL_OPTIONS = [
 ];
 
 export default function ProfileModal({ isInitial = false }) {
-  const { state, dispatch, loadProfile, setProfileModalOpen } = useApp();
+  const { loadProfile, setProfileModalOpen } = useApp();
   const [form, setForm] = useState({
     height: '',
     weight: '',

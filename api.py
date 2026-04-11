@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
-from agent.graph import create_workflow, default_checkpointer, get_async_default_checkpointer
+from agent.graph import create_workflow, default_checkpointer
 from agent.memory import get_memory_agent
 from agent.llm import get_llm
 from contextlib import asynccontextmanager
@@ -37,14 +37,6 @@ async def lifespan(app):
         print("[Startup] 检索器预热完成")
 
     threading.Thread(target=_warmup, daemon=True).start()
-
-    # 初始化异步 checkpointer 和 async graph（延迟到 startup 时做）
-    global app_obj_async
-    from agent.graph import create_workflow
-    async_checkpointer = await get_async_default_checkpointer()
-    app_obj_async = create_workflow(checkpointer=async_checkpointer)
-    print("[Startup] Async workflow initialized")
-
     yield
 
 
@@ -62,10 +54,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局 workflow（同步 checkpointer）
+# 全局 workflow
 app_obj = create_workflow(checkpointer=default_checkpointer)
-# 异步 workflow（延迟初始化，在 lifespan 里创建）
-app_obj_async = None
 memory_agent = get_memory_agent()
 
 # 上传目录

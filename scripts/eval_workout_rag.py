@@ -1,13 +1,14 @@
 """
 训练指导 RAG 检索评测脚本
 
-对比四种检索方案在 fitness_guide collection 上的表现：
-  1. Vector Only        — 纯向量检索
-  2. Hybrid             — 向量检索 + BM25（RRF 融合），无 Rewrite，无 Rerank
-  3. Hybrid+Rewrite    — 向量检索 + BM25 + Query Rewrite（RRF 融合）【可选】
-  4. Hybrid+Rerank     — 向量检索 + BM25 + Rerank（使用 LLM 重新排序）
+对比六种检索方案在 fitness_guide collection 上的表现：
+  1. Vector Only              — 纯向量检索
+  2. Hybrid                   — 向量检索 + BM25（RRF 融合），无 Rewrite，无 Rerank
+  3. Hybrid+Rewrite           — 向量检索 + BM25 + Query Rewrite（RRF 融合）
+  4. Hybrid+Rerank            — 向量检索 + BM25 + Rerank（使用 LLM 重新排序）
+  5. Hybrid+Rewrite+Rerank    — 向量检索 + BM25 + Query Rewrite + Rerank
 
-默认运行三种（vector / hybrid / hybrid_rerank）；hybrid_rewrite 为可选，需显式传 `--methods hybrid_rewrite`。
+默认运行四种（vector / hybrid / hybrid_rewrite / hybrid_rerank）；hybrid_rewrite_rerank 为可选，需显式传 `--methods hybrid_rewrite_rerank` 或 `all`。
 
 评测指标：Precision@K, Recall@K, F1@K, HitRate@K, MRR@K, nDCG@K
 默认 K 值：3, 5
@@ -17,7 +18,7 @@
     python scripts/eval_workout_rag.py --gold scripts/eval_workout_gold.json --output scripts/eval_results
     python scripts/eval_workout_rag.py --fusion-k 10 --k 3 5 10
     python scripts/eval_workout_rag.py --methods vector hybrid hybrid_rerank
-    python scripts/eval_workout_rag.py --methods all  # 包含 hybrid_rewrite
+    python scripts/eval_workout_rag.py --methods all  # 包含 hybrid_rewrite_rerank
 """
 import os
 import sys
@@ -150,6 +151,42 @@ class HybridWithRerankRetriever:
         candidates = fused[: self.reranker.rerank_top_n]
         reranked = self.reranker.rerank(query, candidates, self.fusion_top_k)
         return reranked
+
+
+class HybridWithRewriteAndRerankRetriever:
+    """
+    Hybrid Retriever + Query Rewrite + LLM Rerank
+    先 Rewrite 改写 Query，再 Hybrid 召回，最后 Rerank 重排
+    """
+
+    def __init__(
+        self,
+        collection_name: str,
+        qdrant_client: QdrantClient,
+        embed_model,
+        vector_top_k: int = 20,
+        bm25_top_k: int = 20,
+        fusion_top_k: int = 5,
+        rerank_top_n: int = 20,
+    ):
+        self.collection_name = collection_name
+        self.vector_retriever = VectorRetriever(collection_name, qdrant_client, embed_model)
+        self.bm25_retriever = BM25Retriever(collection_name, qdrant_client)
+        self.query_rewriter = QueryRewriter()
+        self.reranker = LLMReranker(rerank_top_n=rerank_top_n)
+        self.vector_top_k = vector_top_k
+        self.bm25_top_k = bm25_top_k
+        self.fusion_top_k = fusion_top_k
+
+    def retrieve(self, query: str) -> tuple[list, str]:
+        """返回 (chunks, rewritten_query)"""
+        rewritten = self.query_rewriter.rewrite(query)
+        vector_results = self.vector_retriever.retrieve(rewritten, self.vector_top_k)
+        bm25_results = self.bm25_retriever.retrieve(rewritten, self.bm25_top_k)
+        fused = reciprocal_rank_fusion([vector_results, bm25_results])
+        candidates = fused[: self.reranker.rerank_top_n]
+        reranked = self.reranker.rerank(query, candidates, self.fusion_top_k)
+        return reranked, rewritten
 
 
 # ─────────────────────────────────────────────
@@ -320,6 +357,7 @@ def build_markdown_report(
         "Hybrid（无Rewrite无Rerank）": "Vector+BM25，无Rewrite，无Rerank",
         "Hybrid+Rewrite": "Vector+BM25+QueryRewrite",
         "Hybrid+Rerank": "Vector+BM25+LLM Rerank",
+        "Hybrid+Rewrite+Rerank": "Vector+BM25+QueryRewrite+LLM Rerank",
     }
     label_row = " | ".join(methods)
 
@@ -484,22 +522,23 @@ def main():
     parser.add_argument(
         "--methods",
         nargs="+",
-        default=["vector", "hybrid", "hybrid_rerank"],
-        choices=["vector", "hybrid", "hybrid_rewrite", "hybrid_rerank", "all"],
-        help="指定运行哪些方法（默认三种；hybrid_rewrite 为可选，需显式指定）",
+        default=["vector", "hybrid", "hybrid_rewrite", "hybrid_rerank"],
+        choices=["vector", "hybrid", "hybrid_rewrite", "hybrid_rerank", "hybrid_rewrite_rerank", "all"],
+        help="指定运行哪些方法（默认四种；hybrid_rewrite_rerank 为可选，需显式指定）",
     )
     args = parser.parse_args()
 
     if "all" in args.methods:
-        active_methods = ["vector", "hybrid", "hybrid_rewrite", "hybrid_rerank"]  # all 时包含 hybrid_rewrite
+        active_methods = ["vector", "hybrid", "hybrid_rewrite", "hybrid_rerank", "hybrid_rewrite_rerank"]
     else:
         active_methods = args.methods
 
     method_display_names = {
         "vector": "Vector Only",
         "hybrid": "Hybrid（无Rewrite无Rerank）",
-        "hybrid_rewrite": "Hybrid+Rewrite（可选）",
+        "hybrid_rewrite": "Hybrid+Rewrite",
         "hybrid_rerank": "Hybrid+Rerank",
+        "hybrid_rewrite_rerank": "Hybrid+Rewrite+Rerank",
     }
 
     gold_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), args.gold)
@@ -527,6 +566,12 @@ def main():
         )
     if "hybrid_rerank" in active_methods:
         retrievers["hybrid_rerank"] = HybridWithRerankRetriever(
+            collection, qdrant_client, embed_model,
+            vector_top_k=args.top_k, bm25_top_k=args.top_k,
+            fusion_top_k=args.fusion_k, rerank_top_n=args.rerank_top_n,
+        )
+    if "hybrid_rewrite_rerank" in active_methods:
+        retrievers["hybrid_rewrite_rerank"] = HybridWithRewriteAndRerankRetriever(
             collection, qdrant_client, embed_model,
             vector_top_k=args.top_k, bm25_top_k=args.top_k,
             fusion_top_k=args.fusion_k, rerank_top_n=args.rerank_top_n,
@@ -562,7 +607,7 @@ def main():
             if args.debug:
                 print(f"\n[DEBUG] [{qid}] Hybrid | gold={gold_titles} | ret={result.retrieved_titles}")
 
-        # Hybrid + Rerank
+        # Hybrid + Rewrite
         if "hybrid_rewrite" in active_methods:
             t0 = time.time()
             chunks, rewritten = retrievers["hybrid_rewrite"].retrieve(query)
@@ -572,6 +617,18 @@ def main():
             rewrite_log[qid] = (query, rewritten)
             if args.debug:
                 print(f"\n[DEBUG] [{qid}] Hybrid+Rewrite | orig={query} | rewritten={rewritten}")
+                print(f"  | gold={gold_titles} | ret={result.retrieved_titles}")
+
+        # Hybrid + Rewrite + Rerank
+        if "hybrid_rewrite_rerank" in active_methods:
+            t0 = time.time()
+            chunks, rewritten = retrievers["hybrid_rewrite_rerank"].retrieve(query)
+            elapsed_by_method["hybrid_rewrite_rerank"] = elapsed_by_method.get("hybrid_rewrite_rerank", 0) + (time.time() - t0)
+            result = evaluate_query(qid, query, chunks, gold_titles, args.k)
+            results_by_method["hybrid_rewrite_rerank"].append(result)
+            rewrite_log[qid + "_rewrite_rerank"] = (query, rewritten)
+            if args.debug:
+                print(f"\n[DEBUG] [{qid}] Hybrid+Rewrite+Rerank | orig={query} | rewritten={rewritten}")
                 print(f"  | gold={gold_titles} | ret={result.retrieved_titles}")
 
         # Hybrid + Rerank

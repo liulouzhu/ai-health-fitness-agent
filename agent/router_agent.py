@@ -123,6 +123,20 @@ class RouterAgent:
                     "food_report" if i == "food" else ("workout_report" if i == "workout" else i)
                     for i in valid_intents
                 ]
+                # 如果升级后仍然是 general（即 LLM 没有检测到 food/workout），
+                # 则直接根据关键词强制设置多意图
+                if valid_intents == ["general"]:
+                    detected = []
+                    food_keywords = ["吃了", "吃了点", "吃了碗", "吃了份", "吃了些", "摄入了", "吃进去", "吃了一个", "吃了俩", "干掉", "干饭", "喝了"]
+                    workout_keywords = ["跑了", "跑了步", "做了", "做了运动", "健身了", "练了", "锻炼了", "运动了", "跑步了", "游泳了", "骑车了", "走路了", "跳绳了", "打球了", "健身"]
+                    text_lower = user_input.lower()
+                    if any(kw in text_lower for kw in food_keywords):
+                        detected.append("food_report")
+                    if any(kw in text_lower for kw in workout_keywords):
+                        detected.append("workout_report")
+                    if detected:
+                        valid_intents = detected
+                        print(f"[Router] classify_intent - 关键词强制检测多意图: {valid_intents}")
 
             # 保留第一个作为主意图（兼容现有逻辑）
             state["intent"] = valid_intents[0]

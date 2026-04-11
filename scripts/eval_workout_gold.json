@@ -1,0 +1,158 @@
+[
+  {
+    "id": "wq01",
+    "collection": "fitness_guide",
+    "query": "如何正确做深蹲",
+    "relevant_items": [
+      {"title": "深蹲", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq02",
+    "collection": "fitness_guide",
+    "query": "硬拉的标准动作是什么",
+    "relevant_items": [
+      {"title": "硬拉", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq03",
+    "collection": "fitness_guide",
+    "query": "俯卧撑怎么做才标准",
+    "relevant_items": [
+      {"title": "俯卧撑", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq04",
+    "collection": "fitness_guide",
+    "query": "想练臀用什么动作最好",
+    "relevant_items": [
+      {"title": "硬拉", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "坐姿腿举", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "哈克深蹲机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "臀推机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "绳索后踢", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq05",
+    "collection": "fitness_guide",
+    "query": "肩部训练有哪些动作",
+    "relevant_items": [
+      {"title": "过顶推举", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "器械肩推", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "绳索侧平举", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "反向飞鸟机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "绳索面拉", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq06",
+    "collection": "fitness_guide",
+    "query": "背部训练动作推荐",
+    "relevant_items": [
+      {"title": "俯身划船", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "高位下拉", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "坐姿划船机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "辅助引体向上机", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq07",
+    "collection": "fitness_guide",
+    "query": "核心力量训练动作",
+    "relevant_items": [
+      {"title": "平板支撑", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "卷腹机", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq08",
+    "collection": "fitness_guide",
+    "query": "股四头肌怎么练",
+    "relevant_items": [
+      {"title": "深蹲", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "坐姿腿举", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "坐姿腿屈伸", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "哈克深蹲机", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq09",
+    "collection": "fitness_guide",
+    "query": "胸部训练哪些器械最有效",
+    "relevant_items": [
+      {"title": "俯卧撑", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "坐姿推胸机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "蝴蝶机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "辅助双杠臂屈伸机", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq10",
+    "collection": "fitness_guide",
+    "query": "肱三头肌训练动作",
+    "relevant_items": [
+      {"title": "俯卧撑", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "绳索下压", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "辅助双杠臂屈伸机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "坐姿推胸机", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq11",
+    "collection": "fitness_guide",
+    "query": "股后侧链怎么锻炼",
+    "relevant_items": [
+      {"title": "硬拉", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "俯卧腿弯举", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq12",
+    "collection": "fitness_guide",
+    "query": "健身房器械使用指南",
+    "relevant_items": [
+      {"title": "通用动作原则", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "器械训练时的实用建议", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "坐姿腿举", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "高位下拉", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "器械肩推", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq13",
+    "collection": "fitness_guide",
+    "query": "改善圆肩做什么训练",
+    "relevant_items": [
+      {"title": "反向飞鸟机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "绳索面拉", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "俯身划船", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq14",
+    "collection": "fitness_guide",
+    "query": "髋关节训练动作有哪些",
+    "relevant_items": [
+      {"title": "硬拉", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "髋外展机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "髋内收机", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "绳索后踢", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "臀推机", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  },
+  {
+    "id": "wq15",
+    "collection": "fitness_guide",
+    "query": "初学者器械入门推荐",
+    "relevant_items": [
+      {"title": "通用动作原则", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "器械训练时的实用建议", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "坐姿腿屈伸", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "高位下拉", "source": "knowledge/fitness-form-guide.md"},
+      {"title": "坐姿推胸机", "source": "knowledge/fitness-form-guide.md"}
+    ]
+  }
+]

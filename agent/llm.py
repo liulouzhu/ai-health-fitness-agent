@@ -12,8 +12,8 @@ def get_llm():
     if _llm_instance is None:
         _llm_instance = ChatOpenAI(
             model=AgentConfig.LLM_MODEL,
-            api_key=AgentConfig.LLM_API_KEY,
-            base_url=AgentConfig.LLM_BASE_URL,
+            api_key=AgentConfig.LongCat_API_KEY,
+            base_url=AgentConfig.LongCat_BASE_URL,
         )
     return _llm_instance
 

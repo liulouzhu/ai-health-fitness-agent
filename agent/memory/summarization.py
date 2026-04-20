@@ -176,6 +176,50 @@ class SummarizationManager(MemoryAgentBase):
 
             self._atomic_write(LONGTERM_MEMORY_PATH, new_file_content)
 
+        # 写入后触发淘汰
+        self._prune_longterm_memory()
+
+    def _prune_longterm_memory(self) -> int:
+        """淘汰低分摘要，返回淘汰数量
+
+        两层淘汰：
+        1. 评分低于 LONGTERM_MEMORY_MIN_SCORE 的直接淘汰
+        2. 超过 LONGTERM_MEMORY_MAX_ENTRIES 容量时，淘汰低分条目
+        """
+        summaries = self._parse_all_summaries()
+
+        if not summaries:
+            return 0
+
+        cfg = AgentConfig
+
+        # 计算每条摘要的评分（用 general 意图，中性评估）
+        scored = [(s, self._compute_summary_score(s, "general")) for s in summaries]
+
+        # 按评分降序排序
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        # 筛选保留条目
+        to_keep = []
+        to_delete = 0
+        for item, score in scored:
+            if score < cfg.LONGTERM_MEMORY_MIN_SCORE:
+                to_delete += 1
+            elif len(to_keep) < cfg.LONGTERM_MEMORY_MAX_ENTRIES:
+                to_keep.append(item)
+            else:
+                to_delete += 1
+
+        if to_delete == 0:
+            return 0
+
+        # 按时间排序，重写文件
+        to_keep.sort(key=lambda x: x.date)
+        new_content = "# 长期记忆\n" + "\n---\n".join(s.raw_block for s in to_keep)
+        self._atomic_write(self.longterm_memory_path, new_content)
+
+        return to_delete
+
     def _format_list(self, items: list) -> str:
         """格式化列表为markdown"""
         if not items:

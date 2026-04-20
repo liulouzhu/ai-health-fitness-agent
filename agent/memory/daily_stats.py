@@ -3,9 +3,17 @@
 import os
 import re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from agent.memory.base import MemoryAgentBase, DAILY_STATS_PATH, PENDING_STATS_FILE, MEAL_ENTRY_TEMPLATE, WORKOUT_ENTRY_TEMPLATE, DAILY_STATS_TEMPLATE, _memory_lock
+from agent.memory.base import (
+    MemoryAgentBase,
+    DAILY_STATS_PATH,
+    PENDING_STATS_FILE,
+    MEAL_ENTRY_TEMPLATE,
+    WORKOUT_ENTRY_TEMPLATE,
+    DAILY_STATS_TEMPLATE,
+    _memory_lock,
+)
 from config import AgentConfig
 
 
@@ -19,8 +27,34 @@ class DailyStatsManager(MemoryAgentBase):
         Path(DAILY_STATS_PATH).mkdir(parents=True, exist_ok=True)
         return Path(DAILY_STATS_PATH) / f"{date}.md"
 
+    def _cleanup_old_stats(self) -> int:
+        """清理过期的每日统计文件，返回删除数量
+
+        文件名格式: 2026-04-20.md
+        超过 DAILY_STATS_RETENTION_DAYS 的文件会被删除
+        """
+        stats_dir = Path(self.daily_stats_path)
+        if not stats_dir.exists():
+            return 0
+
+        cutoff = datetime.now() - timedelta(days=AgentConfig.DAILY_STATS_RETENTION_DAYS)
+        deleted = 0
+
+        for file in stats_dir.glob("*.md"):
+            try:
+                file_date = datetime.strptime(file.stem, "%Y-%m-%d")
+                if file_date < cutoff:
+                    file.unlink()
+                    deleted += 1
+            except ValueError:
+                pass  # 非日期命名的文件跳过
+
+        return deleted
+
     def load_daily_stats(self, date: str = None) -> dict:
-        """加载每日统计"""
+        """加载每日统计（惰性触发过期清理）"""
+        self._cleanup_old_stats()
+
         file_path = self._get_daily_stats_path(date)
         if not file_path.exists():
             return self._get_empty_daily_stats(date)
@@ -41,14 +75,16 @@ class DailyStatsManager(MemoryAgentBase):
             "consumed_carbs": 0,
             "burned_calories": 0,
             "meals": [],
-            "workouts": []
+            "workouts": [],
         }
 
     def _parse_daily_stats(self, content: str) -> dict:
         """解析markdown格式的每日统计"""
         # 先从文件内容中提取日期，避免用"今天"覆盖历史日期
-        date_match = re.search(r'# 每日统计\s+(\d{4}-\d{2}-\d{2})', content)
-        date = date_match.group(1) if date_match else datetime.now().strftime("%Y-%m-%d")
+        date_match = re.search(r"# 每日统计\s+(\d{4}-\d{2}-\d{2})", content)
+        date = (
+            date_match.group(1) if date_match else datetime.now().strftime("%Y-%m-%d")
+        )
 
         stats = self._get_empty_daily_stats(date)
 
@@ -90,9 +126,15 @@ class DailyStatsManager(MemoryAgentBase):
         """保存每日统计到markdown文件"""
         # 计算剩余
         if profile:
-            target_cal = int(profile.get("target_calories", AgentConfig.DEFAULT_TARGET_CALORIES))
-            target_pro = int(profile.get("target_protein", AgentConfig.DEFAULT_TARGET_PROTEIN))
-            remaining_cal = target_cal - stats["consumed_calories"] + stats["burned_calories"]
+            target_cal = int(
+                profile.get("target_calories", AgentConfig.DEFAULT_TARGET_CALORIES)
+            )
+            target_pro = int(
+                profile.get("target_protein", AgentConfig.DEFAULT_TARGET_PROTEIN)
+            )
+            remaining_cal = (
+                target_cal - stats["consumed_calories"] + stats["burned_calories"]
+            )
             remaining_pro = target_pro - stats["consumed_protein"]
         else:
             remaining_cal = 0
@@ -103,11 +145,13 @@ class DailyStatsManager(MemoryAgentBase):
         for m in stats.get("meals", []):
             if isinstance(m, dict):
                 try:
-                    meals_list.append(MEAL_ENTRY_TEMPLATE.format(
-                        name=m.get("name", "未知"),
-                        calories=int(m.get("calories", 0)),
-                        protein=float(m.get("protein", 0))
-                    ))
+                    meals_list.append(
+                        MEAL_ENTRY_TEMPLATE.format(
+                            name=m.get("name", "未知"),
+                            calories=int(m.get("calories", 0)),
+                            protein=float(m.get("protein", 0)),
+                        )
+                    )
                 except (KeyError, ValueError):
                     meals_list.append(f"- {m.get('name', '未知食物')}")
             else:
@@ -119,11 +163,13 @@ class DailyStatsManager(MemoryAgentBase):
         for w in stats.get("workouts", []):
             if isinstance(w, dict):
                 try:
-                    workouts_list.append(WORKOUT_ENTRY_TEMPLATE.format(
-                        type=w.get("type", "未知"),
-                        duration=int(w.get("duration", 0)),
-                        calories=int(w.get("calories", 0))
-                    ))
+                    workouts_list.append(
+                        WORKOUT_ENTRY_TEMPLATE.format(
+                            type=w.get("type", "未知"),
+                            duration=int(w.get("duration", 0)),
+                            calories=int(w.get("calories", 0)),
+                        )
+                    )
                 except (KeyError, ValueError):
                     workouts_list.append(f"- {w.get('type', '未知运动')}")
             else:
@@ -140,7 +186,7 @@ class DailyStatsManager(MemoryAgentBase):
             burned_calories=int(stats.get("burned_calories", 0)),
             workouts=workouts_str,
             remaining_calories=remaining_cal,
-            remaining_protein=remaining_pro
+            remaining_protein=remaining_pro,
         )
 
         file_path = self._get_daily_stats_path(stats.get("date"))
@@ -184,7 +230,9 @@ class DailyStatsManager(MemoryAgentBase):
         target_pro = int(profile.get("target_protein", 100))
 
         # 剩余热量 = 目标 - 已摄入 + 运动消耗（与 /daily_stats 接口口径一致）
-        remaining_cal = max(0, target_cal - stats["consumed_calories"] + stats["burned_calories"])
+        remaining_cal = max(
+            0, target_cal - stats["consumed_calories"] + stats["burned_calories"]
+        )
         remaining_pro = max(0, target_pro - stats["consumed_protein"])
 
         # 热量缺口 = 已摄入 - 运动消耗（负数表示有缺口）
@@ -193,11 +241,11 @@ class DailyStatsManager(MemoryAgentBase):
         return f"""今日统计（{today}）：
 
 **摄入**
-- 热量：{int(stats['consumed_calories'])} / {target_cal} kcal
-- 蛋白质：{stats['consumed_protein']:.0f} / {target_pro} g
+- 热量：{int(stats["consumed_calories"])} / {target_cal} kcal
+- 蛋白质：{stats["consumed_protein"]:.0f} / {target_pro} g
 
 **消耗**
-- 运动消耗：{stats['burned_calories']} kcal
+- 运动消耗：{stats["burned_calories"]} kcal
 - 热量缺口：{calorie_deficit} kcal
 
 **剩余**
@@ -209,6 +257,7 @@ class DailyStatsManager(MemoryAgentBase):
     def save_pending_stats(self, pending: dict) -> None:
         """保存待确认数据到临时文件（原子写入）"""
         import json
+
         self._atomic_write(PENDING_STATS_FILE, json.dumps(pending, ensure_ascii=False))
 
     def load_pending_stats(self) -> dict:
@@ -216,6 +265,7 @@ class DailyStatsManager(MemoryAgentBase):
         if not os.path.exists(PENDING_STATS_FILE):
             return None
         import json
+
         with open(PENDING_STATS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
 

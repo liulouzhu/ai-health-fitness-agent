@@ -72,6 +72,12 @@ class AgentConfig:
         "stats_query": ["统计", "数据", "热量", "蛋白质", "消耗", "摄入"],
     }
 
+    # ============ 记忆清理配置 ============
+    DAILY_STATS_RETENTION_DAYS = 90  # 每日统计保留天数
+    LONGTERM_MEMORY_MAX_ENTRIES = 50  # 长期记忆最大条目数
+    LONGTERM_MEMORY_MIN_SCORE = 0.15  # 低于此评分的摘要自动淘汰
+    PREFERENCE_INVALIDATION_CONFIDENCE = 0.7  # 偏好失效检测置信度阈值
+
     # 营养目标默认值
     DEFAULT_TARGET_CALORIES = 2000
     DEFAULT_TARGET_PROTEIN = 100

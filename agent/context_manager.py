@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 # ============ 共享工具函数 ============
 
-def is_retrieval_sufficient(retrieved_content: str, query: str = None, domain: str = "通用") -> bool:
+
+def is_retrieval_sufficient(
+    retrieved_content: str, query: str = None, domain: str = "通用"
+) -> bool:
     """
     判断检索内容是否足够。
 
@@ -39,23 +42,24 @@ def is_retrieval_sufficient(retrieved_content: str, query: str = None, domain: s
         return False
 
     from agent.llm import get_llm
+
     llm = get_llm()
 
     if domain == "recipe":
         judge_prompt = (
             f"判断以下检索内容是否足够推荐食谱。\n\n检索内容：{retrieved_content[:2000]}\n\n"
-            f"如果检索内容足够，返回\"足够\"。如果不足，返回\"不足\"。\n只返回\"足够\"或\"不足\"。"
+            f'如果检索内容足够，返回"足够"。如果不足，返回"不足"。\n只返回"足够"或"不足"。'
         )
     elif domain == "workout":
         judge_prompt = (
             f"判断以下检索内容是否足够回答用户的问题。\n\n"
             f"用户问题：{query}\n\n检索内容：{retrieved_content[:2000]}\n\n"
-            f"如果检索内容足够回答问题，返回\"足够\"。如果不足，返回\"不足\"。\n只返回\"足够\"或\"不足\"，不要其他文字。"
+            f'如果检索内容足够回答问题，返回"足够"。如果不足，返回"不足"。\n只返回"足够"或"不足"，不要其他文字。'
         )
     else:
         judge_prompt = (
             f"判断以下检索内容是否足够回答用户的问题。\n\n检索内容：{retrieved_content[:2000]}\n\n"
-            f"如果检索内容足够，返回\"足够\"。如果不足，返回\"不足\"。\n只返回\"足够\"或\"不足\"。"
+            f'如果检索内容足够，返回"足够"。如果不足，返回"不足"。\n只返回"足够"或"不足"。'
         )
 
     response = llm.invoke([{"role": "user", "content": judge_prompt}])
@@ -64,17 +68,20 @@ def is_retrieval_sufficient(retrieved_content: str, query: str = None, domain: s
 
 # ============ 分层数据结构 ============
 
+
 class ContextBundle(TypedDict, total=False):
     """统一上下文数据结构，所有字段均按语义分层"""
-    system_context: str              # system prompt 文本
-    extra_context: str               # intent-specific 额外上下文片段
+
+    system_context: str  # system prompt 文本
+    extra_context: str  # intent-specific 额外上下文片段
     conversation_window: List[Dict]  # 运行时滑动窗口消息
-    user_memory: Dict                # profile + preferences (raw dict)
-    task_context: Dict              # intent-specific 业务上下文
-    retrieved_knowledge: str        # 外部检索内容
+    user_memory: Dict  # profile + preferences (raw dict)
+    task_context: Dict  # intent-specific 业务上下文
+    retrieved_knowledge: str  # 外部检索内容
 
 
 # ============ Token 估算器 ============
+
 
 class TokenEstimator:
     """
@@ -99,11 +106,14 @@ class TokenEstimator:
         # 尝试加载 tiktoken（langchain-openai 自带）
         try:
             import tiktoken
+
             self._encoder = tiktoken.get_encoding("cl100k_base")
             self._using_fallback = False
             logger.debug("[TokenEstimator] Using tiktoken (cl100k_base)")
         except Exception as e:
-            logger.debug(f"[TokenEstimator] tiktoken unavailable ({e}), using char-based fallback")
+            logger.debug(
+                f"[TokenEstimator] tiktoken unavailable ({e}), using char-based fallback"
+            )
             self._using_fallback = True
 
     def estimate(self, text: str) -> int:
@@ -150,6 +160,7 @@ def get_token_estimator() -> TokenEstimator:
 
 # ============ 工具函数 ============
 
+
 def _truncate_to_tokens(text: str, max_tokens: int, estimator: TokenEstimator) -> str:
     """按 token 数上限截断文本（保留开头）"""
     if max_tokens <= 0:
@@ -180,16 +191,24 @@ def _format_pending_stats(pending: dict) -> str:
     if ptype == "multi":
         if pending.get("food"):
             food = pending["food"]
-            parts.append(f"食物记录：{food.get('name', '?')}（{food.get('calories', 0)} kcal，{food.get('protein', 0)}g 蛋白）")
+            parts.append(
+                f"食物记录：{food.get('name', '?')}（{food.get('calories', 0)} kcal，{food.get('protein', 0)}g 蛋白）"
+            )
         if pending.get("workout"):
             workout = pending["workout"]
-            parts.append(f"运动记录：{workout.get('type', '?')}（{workout.get('duration', 0)}分钟，{workout.get('calories', 0)} kcal）")
+            parts.append(
+                f"运动记录：{workout.get('type', '?')}（{workout.get('duration', 0)}分钟，{workout.get('calories', 0)} kcal）"
+            )
     elif ptype == "meal":
         data = pending.get("data", {})
-        parts.append(f"食物记录：{data.get('name', '?')}（{data.get('calories', 0)} kcal，{data.get('protein', 0)}g 蛋白）")
+        parts.append(
+            f"食物记录：{data.get('name', '?')}（{data.get('calories', 0)} kcal，{data.get('protein', 0)}g 蛋白）"
+        )
     elif ptype == "workout":
         data = pending.get("workout", pending.get("data", {}))
-        parts.append(f"运动记录：{data.get('type', '?')}（{data.get('duration', 0)}分钟，{data.get('calories', 0)} kcal）")
+        parts.append(
+            f"运动记录：{data.get('type', '?')}（{data.get('duration', 0)}分钟，{data.get('calories', 0)} kcal）"
+        )
 
     if not parts:
         return "（待确认数据格式未知）"
@@ -210,10 +229,8 @@ SYSTEM_PROMPTS: Dict[str, str] = {
 - 碳水化合物 (g)
 
 直接回复分析结果，不需要额外解释。""",
-
     "workout": """你是一个健身教练专家。请根据以下信息回答用户的问题。
 直接回复健身指导内容，不需要额外解释。""",
-
     "recipe": """你是一个营养师。根据用户的饮食目标和限制，推荐合适的食谱。
 
 请根据以上信息，推荐合适的食谱组合，确保：
@@ -223,10 +240,8 @@ SYSTEM_PROMPTS: Dict[str, str] = {
 4. **严格避免推荐用户不喜欢或过敏的食物**
 
 直接回复推荐内容，不需要额外解释。""",
-
     "general": """你是一个健身健康智能助手，可以进行日常对话。
 请回复用户，保持对话连贯性。如果用户问到健身或饮食相关问题，可以适当引导。""",
-
     "classify_intent": """你是一个智能路由器，负责判断用户意图。
 
 可选意图：food, workout, recipe, stats_query, profile_update, confirm, general, food_report, workout_report
@@ -237,6 +252,7 @@ SYSTEM_PROMPTS: Dict[str, str] = {
 
 
 # ============ 上下文管理器 ============
+
 
 class ContextManager:
     """
@@ -334,8 +350,12 @@ class ContextManager:
         if extra_text:
             extra_tokens = est.estimate(extra_text)
             if extra_tokens > cfg.MAX_EXTRA_CONTEXT_TOKENS:
-                extra_text = _truncate_to_tokens(extra_text, cfg.MAX_EXTRA_CONTEXT_TOKENS, est)
-                logger.debug(f"[CtxMgr] extra_context trimmed: {extra_tokens} → {est.estimate(extra_text)} tokens")
+                extra_text = _truncate_to_tokens(
+                    extra_text, cfg.MAX_EXTRA_CONTEXT_TOKENS, est
+                )
+                logger.debug(
+                    f"[CtxMgr] extra_context trimmed: {extra_tokens} → {est.estimate(extra_text)} tokens"
+                )
             sections["extra_context"] = extra_text
 
         # ----- Section 3: extra_sections（agent 动态内容，token 预算裁剪） -----
@@ -347,33 +367,40 @@ class ContextManager:
                 value_tokens = est.estimate(value)
                 if value_tokens > max_tok:
                     value = _truncate_to_tokens(value, max_tok, est)
-                    logger.debug(f"[CtxMgr] extra_section '{key}' trimmed: {value_tokens} → {est.estimate(value)} tokens")
+                    logger.debug(
+                        f"[CtxMgr] extra_section '{key}' trimmed: {value_tokens} → {est.estimate(value)} tokens"
+                    )
                 sections[key] = value
 
         # ----- Section 4: conversation_window（token 预算裁剪） -----
         conv = bundle["conversation_window"]
         # 估算已有 sections 消耗
-        consumed = sum(est.estimate(v) for v in sections.values()) + 4  # +4 = user msg overhead
+        consumed = (
+            sum(est.estimate(v) for v in sections.values()) + 4
+        )  # +4 = user msg overhead
         remaining = cfg.MAX_CONVERSATION_WINDOW_TOKENS
         trimmed_conv = []
         for msg in reversed(conv):
             t = est.estimate(msg.get("content", ""))
             if remaining >= t + 4:
                 trimmed_conv.insert(0, msg)
-                remaining -= (t + 4)
+                remaining -= t + 4
             else:
                 break
         sections["conversation_window"] = trimmed_conv
 
         # ----- 汇总 token 报告 -----
-        total = est.estimate_messages([
-            {"role": "system", "content": v} if k != "conversation_window" else v
-            for k, v in sections.items()
-            if k != "conversation_window"
-        ] + list(sections.get("conversation_window", [])))
+        total = est.estimate_messages(
+            [
+                {"role": "system", "content": v} if k != "conversation_window" else v
+                for k, v in sections.items()
+                if k != "conversation_window"
+            ]
+            + list(sections.get("conversation_window", []))
+        )
         logger.debug(
             f"[CtxMgr] intent={intent} | "
-            f"system={system_tokens} | extra={est.estimate(sections.get('extra_context',''))} | "
+            f"system={system_tokens} | extra={est.estimate(sections.get('extra_context', ''))} | "
             f"conv={est.estimate_messages(sections.get('conversation_window', []))} | "
             f"total≈{total} tokens (budget={cfg.MAX_TOTAL_CONTEXT_TOKENS})"
         )
@@ -386,7 +413,11 @@ class ContextManager:
             extra_all.append(sections["extra_context"])
         if extra_sections:
             for key, value in sections.items():
-                if key not in ("system_context", "extra_context", "conversation_window") and value:
+                if (
+                    key
+                    not in ("system_context", "extra_context", "conversation_window")
+                    and value
+                ):
                     extra_all.append(f"{key}：{value}")
 
         if extra_all:
@@ -398,7 +429,9 @@ class ContextManager:
         messages.append({"role": "user", "content": user_input})
         return messages
 
-    def append_messages(self, state: AgentState, user_msg: str, assistant_msg: str) -> None:
+    def append_messages(
+        self, state: AgentState, user_msg: str, assistant_msg: str
+    ) -> None:
         """
         向 state['messages'] 追加一轮对话，并维持滑动窗口上限。
         """
@@ -408,7 +441,7 @@ class ContextManager:
             {"role": "assistant", "content": assistant_msg},
         ]
         if len(messages) > AgentConfig.MAX_RECENT_MESSAGES:
-            messages = messages[-AgentConfig.MAX_RECENT_MESSAGES:]
+            messages = messages[-AgentConfig.MAX_RECENT_MESSAGES :]
         state["messages"] = messages
 
     # ---- 公开工具方法 ----
@@ -419,7 +452,9 @@ class ContextManager:
         """
         return self._get_preferences_str()
 
-    def format_task_context(self, intent: str, task_context: Optional[Dict] = None) -> str:
+    def format_task_context(
+        self, intent: str, task_context: Optional[Dict] = None
+    ) -> str:
         """
         公开 API：将 task_context 格式化为易读文本，供 agent 注入 prompt。
 
@@ -440,7 +475,7 @@ class ContextManager:
     def _get_conversation_window(self, state: AgentState) -> List[Dict]:
         """从 state['messages'] 提取运行时滑动窗口"""
         messages = state.get("messages", [])
-        return messages[-AgentConfig.MAX_RECENT_MESSAGES:]
+        return messages[-AgentConfig.MAX_RECENT_MESSAGES :]
 
     def _get_user_memory(self) -> Dict:
         """加载用户长期记忆：profile + preferences"""
@@ -472,14 +507,21 @@ class ContextManager:
     def _build_workout_context(self) -> Dict:
         prefs = self.memory.load_preferences()
         today = self.memory.load_daily_stats()
-        return {"workout_preferences": prefs.get("workout_preferences", {}), "daily_stats": today}
+        return {
+            "workout_preferences": prefs.get("workout_preferences", {}),
+            "daily_stats": today,
+        }
 
     def _build_recipe_context(self) -> Dict:
         profile = self.memory.load_profile()
         today = self.memory.load_daily_stats()
         prefs = self.memory.load_preferences()
-        target_cal = int(profile.get("target_calories", AgentConfig.DEFAULT_TARGET_CALORIES))
-        target_pro = int(profile.get("target_protein", AgentConfig.DEFAULT_TARGET_PROTEIN))
+        target_cal = int(
+            profile.get("target_calories", AgentConfig.DEFAULT_TARGET_CALORIES)
+        )
+        target_pro = int(
+            profile.get("target_protein", AgentConfig.DEFAULT_TARGET_PROTEIN)
+        )
         consumed_cal = today.get("consumed_calories", 0)
         consumed_pro = today.get("consumed_protein", 0)
         burned_cal = today.get("burned_calories", 0)
@@ -508,11 +550,13 @@ class ContextManager:
         """
         parts = []
         prefs_str = self._get_preferences_str()
-        longterm = self.memory.get_longterm_memory_context(
-            limit=AgentConfig.MAX_LONGTERM_MEMORY_ITEMS
-        )
 
         if intent == "general":
+            # 只在 general 意图下注入长期记忆（传入 intent 用于加权选择）
+            longterm = self.memory.get_longterm_memory_context(
+                limit=AgentConfig.MAX_LONGTERM_MEMORY_ITEMS,
+                current_intent=intent,
+            )
             if prefs_str:
                 parts.append(f"用户偏好：{prefs_str}")
             if longterm:
@@ -524,7 +568,9 @@ class ContextManager:
                 parts.append(self._fmt_daily_intake(stats))
 
         elif intent in ("workout", "workout_report"):
-            parts.extend(self._fmt_workout_prefs(task_context.get("workout_preferences", {})))
+            parts.extend(
+                self._fmt_workout_prefs(task_context.get("workout_preferences", {}))
+            )
 
         elif intent == "confirm":
             # 注意：确认流程的真实数据来自 graph state 的 pending_confirmation，
@@ -545,7 +591,9 @@ class ContextManager:
                 parts.append(self._fmt_daily_intake(stats))
 
         elif intent in ("workout", "workout_report"):
-            parts.extend(self._fmt_workout_prefs(task_context.get("workout_preferences", {})))
+            parts.extend(
+                self._fmt_workout_prefs(task_context.get("workout_preferences", {}))
+            )
             stats = task_context.get("daily_stats", {})
             if stats and stats.get("burned_calories"):
                 parts.append(f"今日已消耗：{int(stats.get('burned_calories', 0))} kcal")
@@ -559,11 +607,24 @@ class ContextManager:
             stats = task_context.get("daily_stats", {})
             profile = task_context.get("profile", {})
             if stats:
-                target_cal = int(profile.get("target_calories", AgentConfig.DEFAULT_TARGET_CALORIES))
-                target_pro = int(profile.get("target_protein", AgentConfig.DEFAULT_TARGET_PROTEIN))
-                remaining = max(0, target_cal - stats.get("consumed_calories", 0) + stats.get("burned_calories", 0))
-                parts.append(f"今日摄入：{int(stats.get('consumed_calories', 0))} / {target_cal} kcal")
-                parts.append(f"今日蛋白：{stats.get('consumed_protein', 0):.0f} / {target_pro} g")
+                target_cal = int(
+                    profile.get("target_calories", AgentConfig.DEFAULT_TARGET_CALORIES)
+                )
+                target_pro = int(
+                    profile.get("target_protein", AgentConfig.DEFAULT_TARGET_PROTEIN)
+                )
+                remaining = max(
+                    0,
+                    target_cal
+                    - stats.get("consumed_calories", 0)
+                    + stats.get("burned_calories", 0),
+                )
+                parts.append(
+                    f"今日摄入：{int(stats.get('consumed_calories', 0))} / {target_cal} kcal"
+                )
+                parts.append(
+                    f"今日蛋白：{stats.get('consumed_protein', 0):.0f} / {target_pro} g"
+                )
                 parts.append(f"今日消耗：{stats.get('burned_calories', 0)} kcal")
                 parts.append(f"剩余热量额度：{remaining} kcal")
 

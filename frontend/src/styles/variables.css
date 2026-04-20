@@ -62,7 +62,7 @@
   /* Layout */
   --sidebar-width: 300px;
   --header-height: 60px;
-  --max-content-width: 680px;
+  --max-content-width: 880px;
 
   /* Transitions */
   --transition-fast: 120ms ease;

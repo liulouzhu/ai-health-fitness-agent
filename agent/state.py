@@ -49,20 +49,33 @@ class PendingConfirmation(TypedDict, total=False):
     confirmed: Optional[bool]        # None=pending, True=confirmed, False=cancelled
 
 
+# ============ 意图规划结果 ============
+class IntentPlan(TypedDict):
+    """意图规划层输出的执行计划"""
+    execution_mode: str              # "single" / "parallel" / "sequential"
+    primary_intent: str              # 主意图（归一化后）
+    secondary_intents: List[str]     # 次要意图列表（归一化后）
+    special_intents: List[str]       # 特殊意图列表（confirm / profile_update）
+    regular_intents: List[str]       # 业务意图列表（归一化后）
+    planned_branches: List[str]      # 计划执行的分支节点名列表
+    requires_special_handling: bool  # 是否需要特殊处理
+
+
 # ============ LangGraph 主状态 ============
 #
 # 字段分组：
 # 1. 输入：input_message / image_info
 # 2. 路由：intent / intents / last_intent / route_decision
-# 3. 记忆镜像：user_profile / daily_stats / profile_complete
+# 3. 意图规划：intent_plan（新增，三层解耦核心）
+# 4. 记忆镜像：user_profile / daily_stats / profile_complete
 #    （从 memory_agent 同步而来，非主数据源；主数据源在 memory 模块）
-# 4. 对话历史：messages / summary_buffer / turn_count / last_summary_turn
-# 5. 确认流程：pending_confirmation / requires_confirmation
+# 5. 对话历史：messages / summary_buffer / turn_count / last_summary_turn
+# 6. 确认流程：pending_confirmation / requires_confirmation
 #    （pending_confirmation 是唯一主状态；requires_confirmation 由其派生，仅作路由快捷标记）
-# 6. fan-out 分支结果：food_branch_result / workout_branch_result / stats_branch_result
+# 7. fan-out 分支结果：food_branch_result / workout_branch_result / stats_branch_result / recipe_branch_result / profile_branch_result
 #                       food_pending_conf / workout_pending_conf
-# 7. 最终输出：final_response / response / food_result / workout_result / stats_result / recipe_result
-# 8. legacy 兼容层：pending_stats / pending_response
+# 8. 最终输出：final_response / response / food_result / workout_result / stats_result / recipe_result
+# 9. legacy 兼容层：pending_stats / pending_response
 #    （仅旧版 fallback，不主导主流程；后续逐步清理）
 class AgentState(TypedDict):
     # --- 输入 ---
@@ -74,6 +87,9 @@ class AgentState(TypedDict):
     intents: List[str]           # 多意图列表，如 ["food", "workout"]
     last_intent: Optional[str]   # 上一个意图，用于上下文推断
     route_decision: Optional[str]  # 路由到的目标节点名（调试/可观测性）
+
+    # --- 意图规划（三层解耦核心，由 planner 节点填充）---
+    intent_plan: Optional[IntentPlan]  # 意图规划结果，包含执行模式和分支列表
 
     # --- 记忆镜像（memory 模块是主数据源，此处仅为本轮运行时方便缓存）---
     user_profile: Optional[UserProfile]     # 用户档案镜像（主数据源在 memory_agent）
@@ -98,6 +114,8 @@ class AgentState(TypedDict):
     food_branch_result: Optional[str]     # food_branch 写入的原始输出
     workout_branch_result: Optional[str]  # workout_branch 写入的原始输出
     stats_branch_result: Optional[str]    # stats_branch 写入的原始输出
+    recipe_branch_result: Optional[str]   # recipe_branch 写入的原始输出
+    profile_branch_result: Optional[str]  # profile_branch 写入的原始输出
     food_pending_conf: Optional[PendingConfirmation]  # food_branch 写入的待确认上下文
     workout_pending_conf: Optional[PendingConfirmation]  # workout_branch 写入的待确认上下文
 

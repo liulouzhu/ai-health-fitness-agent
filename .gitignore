@@ -13,3 +13,4 @@ scripsts/
 conftest.py
 docs/
 CLAUDE.md
+.ruff_cache/

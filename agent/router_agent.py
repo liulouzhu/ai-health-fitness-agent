@@ -37,7 +37,7 @@ class RouterAgent:
         return state
 
     def classify_intent(self, state: AgentState) -> AgentState:
-        """意图分类node"""
+        """意图分类node - 三层解耦：只负责"看懂"，不决定路由"""
         print(f"[Router] classify_intent - 开始意图分类")
         emit_trace("node_start", "classify_intent", "正在识别用户意图...")
         state["route_decision"] = "classify_intent"
@@ -60,8 +60,10 @@ class RouterAgent:
                 user_input = state.get("input_message", "")
                 if any(c.isdigit() for c in user_input):
                     state["intent"] = "profile_update"
+                    state["intents"] = ["profile_update"]
                 else:
                     state["intent"] = "general"
+                    state["intents"] = ["general"]
                 emit_event({"type": "intent", "intent": state["intent"]})
                 emit_trace("classification", "classify_intent", f"识别为{intent_display_map.get(state['intent'], state['intent'])}")
                 emit_trace("node_end", "classify_intent", "执行完成")
@@ -70,6 +72,7 @@ class RouterAgent:
             image_info = state.get("image_info", {})
             if image_info.get("has_image", False):
                 state["intent"] = "food"
+                state["intents"] = ["food"]
                 emit_event({"type": "intent", "intent": state["intent"]})
                 emit_trace("classification", "classify_intent", f"识别为{intent_display_map.get(state['intent'], state['intent'])}")
                 emit_trace("node_end", "classify_intent", "执行完成")
@@ -79,6 +82,7 @@ class RouterAgent:
             user_input = state.get("input_message", "").strip().lower()
             if self._is_confirmation(user_input):
                 state["intent"] = "confirm"
+                state["intents"] = ["confirm"]
                 emit_event({"type": "intent", "intent": state["intent"]})
                 emit_trace("classification", "classify_intent", f"识别为{intent_display_map.get(state['intent'], state['intent'])}")
                 emit_trace("node_end", "classify_intent", "执行完成")
@@ -88,6 +92,7 @@ class RouterAgent:
             context_intent = self._check_context_dependent_intent(state)
             if context_intent:
                 state["intent"] = context_intent
+                state["intents"] = [context_intent]
                 state["last_intent"] = context_intent
                 emit_event({"type": "intent", "intent": state["intent"]})
                 emit_trace("classification", "classify_intent", f"识别为{intent_display_map.get(state['intent'], state['intent'])}")
@@ -106,10 +111,8 @@ class RouterAgent:
             response = self.llm.invoke(messages)
             raw_intent = response.content.strip().lower()
 
-            # 解析多意图（以逗号分隔）
-            intent_list = [i.strip() for i in raw_intent.split(",") if i.strip()]
-            # 过滤掉无效意图，保留有效的
-            valid_intents = [i for i in intent_list if i in INTENT_TYPES]
+            # 解析多意图 - 支持多种格式：JSON、逗号（中英文）、换行等
+            valid_intents = self._parse_intents_from_llm(raw_intent)
 
             if not valid_intents:
                 valid_intents = ["general"]
@@ -152,11 +155,76 @@ class RouterAgent:
         except Exception as e:
             print(f"[Router] classify_intent 错误: {e}")
             state["intent"] = "general"
+            state["intents"] = ["general"]
             state["last_intent"] = None
             emit_event({"type": "intent", "intent": state["intent"]})
             emit_trace("classification", "classify_intent", "识别为通用对话")
             emit_trace("node_end", "classify_intent", "执行完成")
         return state
+
+    def _parse_intents_from_llm(self, raw_intent: str) -> list:
+        """解析LLM返回的意图 - 支持JSON、逗号（中英文）、换行等多种格式"""
+        import json
+        import re
+        
+        raw = raw_intent.strip()
+        print(f"[Router] _parse_intents_from_llm - raw: {raw}")
+        
+        # 1. 尝试解析JSON格式
+        try:
+            # 处理可能的markdown代码块
+            json_match = re.search(r'```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```', raw, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_str = raw
+            
+            parsed = json.loads(json_str)
+            if isinstance(parsed, list):
+                # JSON数组格式
+                intents = [str(i).strip().lower() for i in parsed if str(i).strip().lower() in INTENT_TYPES]
+                if intents:
+                    print(f"[Router] _parse_intents_from_llm - JSON解析成功: {intents}")
+                    return intents
+            elif isinstance(parsed, dict) and "intents" in parsed:
+                # JSON对象格式 {"intents": [...]}
+                intents = [str(i).strip().lower() for i in parsed["intents"] if str(i).strip().lower() in INTENT_TYPES]
+                if intents:
+                    print(f"[Router] _parse_intents_from_llm - JSON对象解析成功: {intents}")
+                    return intents
+        except (json.JSONDecodeError, ValueError):
+            pass
+        
+        # 2. 尝试解析逗号分隔（支持中英文逗号）
+        # 统一替换中文逗号为英文逗号
+        normalized = raw.replace("，", ",").replace("、", ",")
+        # 按逗号和换行分割
+        parts = re.split(r'[,\n]+', normalized)
+        intents = [p.strip().lower() for p in parts if p.strip().lower() in INTENT_TYPES]
+        if intents:
+            print(f"[Router] _parse_intents_from_llm - 逗号分隔解析成功: {intents}")
+            return intents
+        
+        # 3. 尝试从文本中提取所有意图关键词（不只是第一个）
+        raw_lower = raw.lower()
+        matched_intents = []
+        for intent in INTENT_TYPES:
+            if intent in raw_lower:
+                matched_intents.append(intent)
+        
+        if matched_intents:
+            # 去重并保持稳定顺序（按 INTENT_TYPES 中的顺序）
+            seen = set()
+            deduped = []
+            for i in matched_intents:
+                if i not in seen:
+                    seen.add(i)
+                    deduped.append(i)
+            print(f"[Router] _parse_intents_from_llm - 关键词匹配成功: {deduped}")
+            return deduped
+        
+        print(f"[Router] _parse_intents_from_llm - 无法解析，返回空列表")
+        return []
 
     def _check_context_dependent_intent(self, state: AgentState) -> str:
         """检查是否是上下文相关的意图（如紧跟食谱请求后的"换一个"）"""

@@ -6,9 +6,10 @@ from agent.router_agent import RouterAgent, CONFIRM_WORDS, DENY_WORDS
 from agent.food_agent import FoodAgent
 from agent.workout_agent import WorkoutAgent
 from agent.recipe_agent import RecipeAgent
+from agent.planner import get_planner
 from agent.multi_agent import (
-    food_workout_fanout, food_stats_fanout, workout_stats_fanout,
-    food_branch, workout_branch, stats_branch,
+    generic_fanout,
+    food_branch, workout_branch, stats_branch, recipe_branch,
     multi_join_node
 )
 from agent.memory import get_memory_agent
@@ -135,7 +136,7 @@ _cap_checkpoint_size = trim_state
 
 # ============ 路由函数 ============
 
-# 意图 → 节点名 映射（单意图）
+# 意图 → 节点名 映射（单意图，用于直接路由）
 INTENT_TO_NODE = {
     "food": "food_generate",
     "food_report": "food_generate",
@@ -150,87 +151,104 @@ INTENT_TO_NODE = {
 
 
 def routing_func(state: AgentState):
-    """主路由函数 - LangGraph 条件路由
-
-    多意图时返回 [Send(...)] 实现原生 fan-out。
-    单意图时返回节点名字符串。
-
-    特殊意图（confirm / profile_update / general）优先处理，
-    如果和其他意图混合，整体路由到 general_node。
+    """主路由函数 - 基于 intent_plan 动态路由
+    
+    三层解耦架构：
+    1. classify_intent 输出 intents（只负责"看懂"）
+    2. intent_planner 生成 intent_plan（负责规划）
+    3. routing_func 根据 intent_plan 路由（负责执行调度）
+    
+    返回值：
+    - 单意图：返回节点名字符串
+    - 多意图：返回 "generic_fanout" 节点（由该节点动态生成 Send）
+    - confirm 特殊处理：根据 pending_confirmation 状态路由
     """
-    intents = state.get("intents", [state.get("intent", "general")])
-    print(f"[Router] routing_func - intents: {intents}")
-
-    # 清理空意图
-    intents = [i for i in intents if i]
-    if not intents:
-        print("[Router] 无有效意图 → general_node")
-        return "general_node"
-
-    # ---- 意图等价类标准化 ----
-    # food_report / workout_report 应等价于 food / workout，支持 fan-out
-    _intent_aliases = {
-        "food_report": "food",
-        "workout_report": "workout",
-    }
-    normalized_intents = []
-    for i in intents:
-        normalized_intents.append(_intent_aliases.get(i, i))
-    intents = normalized_intents
-    print(f"[Router] 标准化意图: {intents}")
-
-    # ---- 特殊意图处理 ----
-    special_intents = {"confirm", "profile_update"}
-    regular_intents = set(i for i in intents if i not in special_intents)
-
+    intent_plan = state.get("intent_plan")
+    
+    # 如果没有 intent_plan（兼容旧逻辑），使用 intents 直接路由
+    if not intent_plan:
+        print(f"[Router] routing_func - 无 intent_plan，降级到旧逻辑")
+        return _legacy_routing_func(state)
+    
+    print(f"[Router] routing_func - intent_plan: mode={intent_plan['execution_mode']}, "
+          f"branches={intent_plan['planned_branches']}")
+    
+    # ---- 特殊意图优先处理 ----
+    special_intents = intent_plan.get("special_intents", [])
+    regular_intents = intent_plan.get("regular_intents", [])
+    
     # 纯特殊意图：单独处理
-    if not regular_intents:
-        intent = intents[0]
+    if not regular_intents and special_intents:
+        intent = special_intents[0]
         if intent == "confirm":
-            # pending_confirmation 非空且 confirmed=None → 在等待确认回复
-            # → confirm_recovery 处理用户回复
-            # 否则 → confirm_node 显示/重新显示确认提示
             pending_conf = state.get("pending_confirmation") or {}
             if pending_conf and pending_conf.get("confirmed") is None:
                 return "confirm_recovery"
             return "confirm_node"
         elif intent == "profile_update":
             return "profile_node"
-
-    # 混合意图（special + regular）：降级为 general_node
-    special_user_intents = set(intents) & special_intents
-    if special_user_intents:
-        print(f"[Router] 混合意图 {intents}，降级到 general_node")
+    
+    # ---- 混合意图：特殊意图 + 业务意图 ----
+    # profile_update + regular intents：先执行 profile_update，再执行业务意图
+    if special_intents and regular_intents:
+        print(f"[Router] routing_func - 混合意图: special={special_intents}, regular={regular_intents}")
+        if "profile_update" in special_intents:
+            # 先执行 profile_update，然后通过条件边路由到 generic_fanout
+            print(f"[Router] routing_func - 混合意图含 profile_update → profile_update_pre")
+            return "profile_update_pre"
+        # 其他特殊意图（如 confirm）需要特殊处理
+        # confirm 混合业务意图的场景暂不支持，降级到 general_node
+        if "confirm" in special_intents:
+            print(f"[Router] routing_func - confirm 混合业务意图暂不支持 → general_node")
+            return "general_node"
+    
+    # ---- 单意图路由 ----
+    if intent_plan["execution_mode"] == "single":
+        primary = intent_plan["primary_intent"]
+        node = INTENT_TO_NODE.get(primary)
+        if node:
+            print(f"[Router] routing_func - 单意图 {primary} → {node}")
+            return node
+        print(f"[Router] routing_func - 单意图 {primary} 无对应节点 → general_node")
         return "general_node"
+    
+    # ---- 多意图 fan-out ----
+    # 使用通用 fan-out 节点，动态根据 planned_branches 生成 Send
+    if intent_plan["execution_mode"] == "parallel":
+        planned_branches = intent_plan.get("planned_branches", [])
+        if planned_branches:
+            print(f"[Router] routing_func - 多意图 parallel → generic_fanout")
+            return "generic_fanout"
+        # 无有效分支，降级
+        print(f"[Router] routing_func - 多意图无有效分支 → general_node")
+        return "general_node"
+    
+    # 兜底
+    print(f"[Router] routing_func - 未知 execution_mode → general_node")
+    return "general_node"
 
-    # ---- 常规意图路由 ----
+
+def _legacy_routing_func(state: AgentState):
+    """旧版路由函数 - 兼容没有 intent_plan 的情况"""
+    intents = state.get("intents", [state.get("intent", "general")])
+    print(f"[Router] _legacy_routing_func - intents: {intents}")
+    
+    intents = [i for i in intents if i]
+    if not intents:
+        return "general_node"
+    
+    # 归一化
+    _intent_aliases = {"food_report": "food", "workout_report": "workout"}
+    normalized = [_intent_aliases.get(i, i) for i in intents]
+    intents = normalized
+    
     # 单意图
     if len(intents) == 1:
-        intent = intents[0]
-        node = INTENT_TO_NODE.get(intent)
-        if node:
-            print(f"[Router] 单意图 {intent} → {node}")
-            return node
-        print(f"[Router] 单意图 {intent} 无对应节点 → general_node")
-        return "general_node"
-
-    # ---- 多意图 fan-out ----
-    # 返回字符串节点名（由条件边路由），由 fan-out 节点内部发射 Send
-    regular_set = regular_intents
-    print(f"[Router] 多意图 {intents} → fan-out")
-
-    if regular_set == {"food", "workout"}:
-        return "food_workout_fanout"
-    if regular_set == {"food", "stats_query"}:
-        return "food_stats_fanout"
-    if regular_set == {"workout", "stats_query"}:
-        return "workout_stats_fanout"
-    if regular_set == {"food", "workout", "stats_query"}:
-        return "food_workout_fanout"
-
-    # 其他组合：降级
-    print(f"[Router] 意图组合 {regular_set} 降级到 general_node")
-    return "general_node"
+        node = INTENT_TO_NODE.get(intents[0])
+        return node if node else "general_node"
+    
+    # 多意图 - 降级到通用 fan-out
+    return "generic_fanout"
 
 
 def profile_check_route(state: AgentState) -> str:
@@ -255,6 +273,18 @@ def init_daily_stats_node(state: AgentState) -> AgentState:
     stats = memory_agent.load_daily_stats(today)
     state["daily_stats"] = stats
     emit_trace("node_end", "init_daily_stats", "执行完成")
+    return state
+
+
+def intent_planner_node(state: AgentState) -> AgentState:
+    """意图规划节点 - 三层解耦的规划层
+    
+    将 classify_intent 输出的 intents 转换为执行计划。
+    执行计划包含：执行模式、分支列表、特殊意图处理方式等。
+    """
+    log_node("intent_planner")
+    planner = get_planner()
+    state = planner.plan(state)
     return state
 
 
@@ -318,6 +348,28 @@ def profile_node(state: AgentState) -> AgentState:
     state = router.handle_profile_update(state)
     state["final_response"] = state.get("response")
     emit_trace("node_end", "profile_node", "执行完成")
+    trim_state(state)
+    return state
+
+
+def profile_update_pre_node(state: AgentState) -> AgentState:
+    """档案更新预处理节点 - 用于混合意图场景
+    
+    当 profile_update 与 business intents 混合时：
+    1. 先执行 profile_update 逻辑
+    2. 保存结果到 profile_branch_result
+    3. 然后通过条件边路由到 generic_fanout 执行其他业务意图
+    
+    这样 profile_update 不会被静默丢弃。
+    """
+    log_node("profile_update_pre")
+    emit_trace("node_start", "profile_update_pre", "正在更新用户档案...")
+    state["route_decision"] = "profile_update_pre"
+    router = RouterAgent()
+    state = router.handle_profile_update(state)
+    # 保存 profile_update 结果，供 multi_join_node 合并
+    state["profile_branch_result"] = state.get("response", "")
+    emit_trace("node_end", "profile_update_pre", "档案更新完成")
     trim_state(state)
     return state
 
@@ -500,15 +552,19 @@ def confirm_recovery_node(state: AgentState) -> AgentState:
 
 def create_workflow(checkpointer=None):
     """创建 LangGraph 工作流
-
-    架构说明：
-    - check_profile → 档案检查
+    
+    三层解耦架构：
+    1. classify_intent: 意图识别层（只负责"看懂"）
+    2. intent_planner: 意图规划层（生成执行计划）
+    3. routing_func: 执行调度层（根据计划路由）
+    
+    工作流程：
+    check_profile → 档案检查
       - 档案不完整 → general_node（询问档案）
       - 档案完整 → init_daily_stats
-    - init_daily_stats → classify_intent
-    - classify_intent → routing_func（条件路由）
+    init_daily_stats → classify_intent → intent_planner → routing_func
       - 单意图 → 对应节点 → END
-      - 多意图 → fan-out 节点 → multi_join_node → END
+      - 多意图 → generic_fanout → multi_join_node → END
       - confirm 意图 → confirm_node → confirm_recovery_node → commit_node → END
     """
     builder = StateGraph(AgentState)
@@ -517,24 +573,25 @@ def create_workflow(checkpointer=None):
     builder.add_node("check_profile", RouterAgent().check_profile)
     builder.add_node("init_daily_stats", init_daily_stats_node)
     builder.add_node("classify_intent", RouterAgent().classify_intent)
+    builder.add_node("intent_planner", intent_planner_node)
     builder.add_node("food_generate", food_generate_node)
     builder.add_node("workout_generate", workout_generate_node)
     builder.add_node("stats_node", stats_node)
     builder.add_node("recipe_node", recipe_node)
     builder.add_node("profile_node", profile_node)
+    builder.add_node("profile_update_pre", profile_update_pre_node)  # 混合意图中的 profile_update 预处理
     builder.add_node("general_node", general_node)
     builder.add_node("confirm_node", confirm_node)
     builder.add_node("confirm_recovery", confirm_recovery_node)
     builder.add_node("commit_node", commit_node)
 
-    # === fan-out 多意图节点 ===
-    builder.add_node("food_workout_fanout", food_workout_fanout)
-    builder.add_node("food_stats_fanout", food_stats_fanout)
-    builder.add_node("workout_stats_fanout", workout_stats_fanout)
+    # === 通用 fan-out 节点 ===
+    builder.add_node("generic_fanout", generic_fanout)
     # 分支节点（由 Send 调度）
     builder.add_node("food_branch", food_branch)
     builder.add_node("workout_branch", workout_branch)
     builder.add_node("stats_branch", stats_branch)
+    builder.add_node("recipe_branch", recipe_branch)
     builder.add_node("multi_join_node", multi_join_node)
 
     # === 入口 ===
@@ -550,12 +607,13 @@ def create_workflow(checkpointer=None):
         }
     )
 
-    # 初始化统计 → 意图分类
+    # 初始化统计 → 意图分类 → 意图规划
     builder.add_edge("init_daily_stats", "classify_intent")
+    builder.add_edge("classify_intent", "intent_planner")
 
-    # 意图分类后 → 主路由
+    # 意图规划后 → 主路由
     builder.add_conditional_edges(
-        "classify_intent",
+        "intent_planner",
         routing_func,
         {
             "food_generate": "food_generate",
@@ -563,20 +621,20 @@ def create_workflow(checkpointer=None):
             "stats_node": "stats_node",
             "recipe_node": "recipe_node",
             "profile_node": "profile_node",
+            "profile_update_pre": "profile_update_pre",  # 混合意图中的 profile_update 预处理
             "general_node": "general_node",
             "confirm_node": "confirm_node",
-            "food_workout_fanout": "food_workout_fanout",
-            "food_stats_fanout": "food_stats_fanout",
-            "workout_stats_fanout": "workout_stats_fanout",
+            "generic_fanout": "generic_fanout",
         }
     )
 
     # === fan-out 节点的边 ===
-    # fan-out 节点返回 [Send(...)] 调度分支，分支执行完后流向 join_node
-    builder.add_edge("food_workout_fanout", "multi_join_node")
-    builder.add_edge("food_stats_fanout", "multi_join_node")
-    builder.add_edge("workout_stats_fanout", "multi_join_node")
+    # generic_fanout 返回 [Send(...)] 调度分支，分支执行完后流向 join_node
+    builder.add_edge("generic_fanout", "multi_join_node")
     builder.add_edge("multi_join_node", END)
+
+    # profile_update_pre 执行完后路由到 generic_fanout 执行业务意图
+    builder.add_edge("profile_update_pre", "generic_fanout")
 
     # === confirm_node 的后续路由 ===
     # confirm_node 在 routing_func 层面处理了 Turn 1/Turn 2 区分

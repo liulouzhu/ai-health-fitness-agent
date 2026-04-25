@@ -58,53 +58,87 @@ def _clear_state(state: dict) -> dict:
 
 def generic_fanout(state: AgentState) -> Command:
     """通用 fan-out 节点 - 根据 intent_plan 动态生成 Send
-    
+
     三层解耦的执行层：
-    1. 从 intent_plan 读取 planned_branches
-    2. 根据 intents 过滤每个分支的意图
-    3. 动态生成 Send 列表，同时传递分支专属的 prompt bundle
+    1. 优先使用 decomposed_tasks 按 task 分发（每个 task 带独立 query）
+    2. 降级：从 intent_plan 读取 planned_branches，按 intents 过滤分发
     """
     print(f"[Fanout] generic_fanout - 开始")
     state["route_decision"] = "generic_fanout"
-    
+
     intent_plan = state.get("intent_plan")
     intents = state.get("intents", [state.get("intent", "general")])
     branch_bundles = state.get("branch_prompt_bundles") or {}
-    
-    # 如果有 intent_plan，使用 planned_branches
-    if intent_plan:
-        planned_branches = intent_plan.get("planned_branches", [])
-        print(f"[Fanout] generic_fanout - 使用 intent_plan: branches={planned_branches}")
-    else:
-        # 降级：根据 intents 动态推断分支
-        planned_branches = _infer_branches_from_intents(intents)
-        print(f"[Fanout] generic_fanout - 降级推断: branches={planned_branches}")
-    
-    # 动态生成 Send 列表
-    sends = []
-    for branch_name in planned_branches:
-        intent_filter = BRANCH_INTENT_FILTERS.get(branch_name, set())
-        # 过滤出属于该分支的意图（保留原始形式，如 food_report / workout_report）
-        filtered_intents = [i for i in intents if i in intent_filter]
-        
-        if filtered_intents:
-            # 创建分支 state
+    decomposed_tasks = state.get("decomposed_tasks")
+
+    # ---- 优先：按 decomposed_tasks 分发 ----
+    if decomposed_tasks:
+        print(f"[Fanout] generic_fanout - 使用 decomposed_tasks ({len(decomposed_tasks)} 个)")
+        branch_to_task = {}
+        for task in decomposed_tasks:
+            branch = task.get("branch")
+            if branch and branch not in branch_to_task:
+                branch_to_task[branch] = task
+
+        if intent_plan:
+            planned_branches = intent_plan.get("planned_branches", [])
+        else:
+            planned_branches = list(branch_to_task.keys())
+
+        sends = []
+        for branch_name in planned_branches:
+            task = branch_to_task.get(branch_name)
+            if not task:
+                continue
+
             branch_state = _clear_state(dict(state))
-            # 设置分支的 intent（归一化后，用于路由）
-            branch_state["intent"] = _normalize_intent(filtered_intents[0])
-            # 保留原始意图列表（用于 agent 内判断 reporting 语义）
-            branch_state["source_intents"] = list(filtered_intents)
-            
+            # intent 使用归一化后的值（用于分支内路由和 system prompt 选择）
+            branch_state["intent"] = _normalize_task_intent(task["intent"])
+            # source_intents 保留原始 intent（用于 agent 内判断 reporting 语义）
+            branch_state["source_intents"] = [task["intent"]]
+            # input_message 设置为 task 的 query（子 agent 优先消费 branch_input）
+            branch_state["input_message"] = task["query"]
+
             # 传递该分支的 prompt bundle（如果存在）
             if branch_name in branch_bundles:
                 branch_state["branch_prompt_bundle"] = branch_bundles[branch_name]
                 print(f"[Fanout] generic_fanout - 传递 {branch_name} prompt bundle")
-            
+
+            sends.append(Send(branch_name, branch_state))
+            print(f"[Fanout] generic_fanout - 添加分支: {branch_name} "
+                  f"(intent={task['intent']}, query={task['query'][:30]}...)")
+
+        if not sends:
+            print(f"[Fanout] generic_fanout - 无有效分支，降级到 general_node")
+            return Command(goto="general_node")
+        return Command(goto=sends)
+
+    # ---- 降级：按 intents 过滤分发（旧逻辑）----
+    if intent_plan:
+        planned_branches = intent_plan.get("planned_branches", [])
+        print(f"[Fanout] generic_fanout - 使用 intent_plan: branches={planned_branches}")
+    else:
+        planned_branches = _infer_branches_from_intents(intents)
+        print(f"[Fanout] generic_fanout - 降级推断: branches={planned_branches}")
+
+    sends = []
+    for branch_name in planned_branches:
+        intent_filter = BRANCH_INTENT_FILTERS.get(branch_name, set())
+        filtered_intents = [i for i in intents if i in intent_filter]
+
+        if filtered_intents:
+            branch_state = _clear_state(dict(state))
+            branch_state["intent"] = _normalize_intent(filtered_intents[0])
+            branch_state["source_intents"] = list(filtered_intents)
+
+            if branch_name in branch_bundles:
+                branch_state["branch_prompt_bundle"] = branch_bundles[branch_name]
+                print(f"[Fanout] generic_fanout - 传递 {branch_name} prompt bundle")
+
             sends.append(Send(branch_name, branch_state))
             print(f"[Fanout] generic_fanout - 添加分支: {branch_name} (intents={filtered_intents}, source_intents={filtered_intents})")
-    
+
     if not sends:
-        # 无有效分支，返回 general_node
         print(f"[Fanout] generic_fanout - 无有效分支，降级到 general_node")
         return Command(goto="general_node")
 
@@ -139,6 +173,18 @@ def _infer_branches_from_intents(intents: list) -> list:
 def _normalize_intent(intent: str) -> str:
     """归一化意图（保留 report 语义，不合并）"""
     return intent
+
+
+def _normalize_task_intent(intent: str) -> str:
+    """归一化 task 的 intent，用于分支 state 的 intent 字段。
+
+    分支的 system prompt 选择依赖 intent 值，需要归一化到 agent 能识别的形式。
+    """
+    mapping = {
+        "food_report": "food",
+        "recovery": "workout",
+    }
+    return mapping.get(intent, intent)
 
 
 # ============ 分支节点 ============

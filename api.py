@@ -71,6 +71,7 @@ STREAM_NODE_NAMES = {
     "check_profile",
     "init_daily_stats",
     "classify_intent",
+    "decompose_tasks",
     "food_generate",
     "workout_generate",
     "stats_node",
@@ -246,6 +247,7 @@ def _build_graph_input(request: ChatRequest, restored_state: dict) -> dict:
         "intents": restored_state.get("intents", []),
         "pending_confirmation": restored_state.get("pending_confirmation") or {},
         "requires_confirmation": restored_state.get("requires_confirmation", False),
+        "decomposed_tasks": None,
         # === 分支结果（fan-out 用，本轮结束后图内会写入）===
         "food_branch_result": None,
         "workout_branch_result": None,
@@ -337,6 +339,7 @@ def _clear_corrupt_state(thread_id: str, config: dict) -> None:
                 "last_intent": None,
                 "route_decision": None,
                 "intent_plan": None,
+                "decomposed_tasks": None,
                 "pending_confirmation": {},
                 "requires_confirmation": False,
                 "food_branch_result": None,

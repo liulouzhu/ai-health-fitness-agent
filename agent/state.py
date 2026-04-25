@@ -2,6 +2,14 @@ from typing import Annotated, Dict, List, Optional, TypedDict
 import operator
 
 
+# ============ 子任务分解 ============
+class DecomposedTask(TypedDict):
+    """分解后的子任务"""
+    intent: str          # 子任务意图（如 food_report / recovery）
+    branch: str          # 目标分支节点名（如 food_branch / workout_advice_branch）
+    query: str           # 子任务对应的用户输入片段
+
+
 # ============ 用户长期档案 ============
 class UserProfile(TypedDict):
     """用户基础信息和长期目标"""
@@ -109,6 +117,9 @@ class AgentState(TypedDict):
     # --- 意图规划（三层解耦核心，由 planner 节点填充）---
     intent_plan: Optional[IntentPlan]  # 意图规划结果，包含执行模式和分支列表
     branch_prompt_bundles: Optional[Dict[str, "BranchPromptBundle"]]  # 分支专属 prompt 上下文包（分支名 → bundle）
+
+    # --- 子任务分解（由 decompose_tasks_node 填充）---
+    decomposed_tasks: Optional[List[DecomposedTask]]  # 分解后的子任务列表
 
     # --- 记忆镜像（memory 模块是主数据源，此处仅为本轮运行时方便缓存）---
     user_profile: Optional[UserProfile]     # 用户档案镜像（主数据源在 memory_agent）

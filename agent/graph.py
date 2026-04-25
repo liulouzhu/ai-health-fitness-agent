@@ -7,7 +7,7 @@ from agent.food_agent import FoodAgent
 from agent.workout_report_agent import WorkoutReportAgent
 from agent.workout_advice_agent import WorkoutAdviceAgent
 from agent.recipe_agent import RecipeAgent
-from agent.planner import get_planner
+from agent.planner import get_planner, decompose_tasks_node
 from agent.multi_agent import (
     generic_fanout,
     food_branch, stats_branch, recipe_branch,
@@ -635,6 +635,7 @@ def create_workflow(checkpointer=None):
     builder.add_node("check_profile", RouterAgent().check_profile)
     builder.add_node("init_daily_stats", init_daily_stats_node)
     builder.add_node("classify_intent", RouterAgent().classify_intent)
+    builder.add_node("decompose_tasks", decompose_tasks_node)
     builder.add_node("intent_planner", intent_planner_node)
     builder.add_node("food_generate", food_generate_node)
     builder.add_node("workout_generate", workout_generate_node)
@@ -670,9 +671,10 @@ def create_workflow(checkpointer=None):
         }
     )
 
-    # 初始化统计 → 意图分类 → 意图规划
+    # 初始化统计 → 意图分类 → 子任务分解 → 意图规划
     builder.add_edge("init_daily_stats", "classify_intent")
-    builder.add_edge("classify_intent", "intent_planner")
+    builder.add_edge("classify_intent", "decompose_tasks")
+    builder.add_edge("decompose_tasks", "intent_planner")
 
     # 意图规划后 → 主路由
     builder.add_conditional_edges(

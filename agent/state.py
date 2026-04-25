@@ -131,12 +131,14 @@ class AgentState(TypedDict):
 
     # --- fan-out 分支结果（每个分支写自己专属字段，避免并发覆盖） ---
     food_branch_result: Optional[str]     # food_branch 写入的原始输出
-    workout_branch_result: Optional[str]  # workout_branch 写入的原始输出
+    workout_report_branch_result: Optional[str]  # workout_report_branch 写入的记录结果
+    workout_advice_branch_result: Optional[str]  # workout_advice_branch 写入的咨询结果
     stats_branch_result: Optional[str]    # stats_branch 写入的原始输出
     recipe_branch_result: Optional[str]   # recipe_branch 写入的原始输出
     profile_branch_result: Optional[str]  # profile_branch 写入的原始输出
     food_pending_conf: Optional[PendingConfirmation]  # food_branch 写入的待确认上下文
-    workout_pending_conf: Optional[PendingConfirmation]  # workout_branch 写入的待确认上下文
+    workout_report_pending_conf: Optional[PendingConfirmation]  # workout_report_branch 写入的待确认上下文
+    workout_advice_pending_conf: Optional[PendingConfirmation]  # workout_advice_branch 写入的待确认上下文
 
     # --- 最终响应 ---
     final_response: Optional[str]     # 最终回复给用户的内容（join 节点合并后写入）

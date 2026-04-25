@@ -4,12 +4,14 @@ from langgraph.types import Send, Command
 from agent.state import AgentState
 from agent.router_agent import RouterAgent, CONFIRM_WORDS, DENY_WORDS
 from agent.food_agent import FoodAgent
-from agent.workout_agent import WorkoutAgent
+from agent.workout_report_agent import WorkoutReportAgent
+from agent.workout_advice_agent import WorkoutAdviceAgent
 from agent.recipe_agent import RecipeAgent
 from agent.planner import get_planner
 from agent.multi_agent import (
     generic_fanout,
-    food_branch, workout_branch, stats_branch, recipe_branch,
+    food_branch, stats_branch, recipe_branch,
+    workout_report_branch, workout_advice_branch,
     multi_join_node
 )
 from agent.memory import get_memory_agent
@@ -130,14 +132,12 @@ def trim_state(state: AgentState) -> None:
         state.pop(key, None)
     
     # 6. 清空分支结果字段（fan-out join 后不再需要）
-    for key in ("food_branch_result", "workout_branch_result", "stats_branch_result", 
+    for key in ("food_branch_result", "stats_branch_result",
                 "recipe_branch_result", "profile_branch_result",
-                "food_pending_conf", "workout_pending_conf"):
+                "workout_report_branch_result", "workout_advice_branch_result",
+                "food_pending_conf",
+                "workout_report_pending_conf", "workout_advice_pending_conf"):
         state.pop(key, None)
-
-
-# 别名兼容旧代码
-_cap_checkpoint_size = trim_state
 
 
 # ============ 路由函数 ============
@@ -307,12 +307,18 @@ def food_generate_node(state: AgentState) -> AgentState:
 
 
 def workout_generate_node(state: AgentState) -> AgentState:
-    """运动指导 + 生成候选结果节点"""
+    """运动节点（单意图路径）- 根据 intent 选择记录或咨询 agent"""
     log_node("workout_generate")
     emit_trace("node_start", "workout_generate", "正在生成运动方案...")
     state["route_decision"] = "workout_generate"
-    workout_agent = WorkoutAgent()
-    state = workout_agent.run(state)
+
+    intent = state.get("intent", "workout")
+    if intent == "workout_report":
+        agent = WorkoutReportAgent()
+    else:
+        agent = WorkoutAdviceAgent()
+    state = agent.run(state)
+
     emit_trace("node_end", "workout_generate", "执行完成")
     trim_state(state)
     return state
@@ -425,9 +431,10 @@ def confirm_node(state: AgentState) -> AgentState:
         )
 
     def _read_workout_analysis(state_dict):
-        """优先读取 workout_branch_result（多意图），回退到 workout_result（单意图）"""
+        """优先读取 workout 分支结果（多意图），回退到 workout_result（单意图）"""
         return (
-            state_dict.get("workout_branch_result")
+            state_dict.get("workout_report_branch_result")
+            or state_dict.get("workout_advice_branch_result")
             or state_dict.get("workout_result")
             or state_dict.get("response")
             or ""
@@ -644,7 +651,8 @@ def create_workflow(checkpointer=None):
     builder.add_node("generic_fanout", generic_fanout)
     # 分支节点（由 Send 调度）
     builder.add_node("food_branch", food_branch)
-    builder.add_node("workout_branch", workout_branch)
+    builder.add_node("workout_report_branch", workout_report_branch)
+    builder.add_node("workout_advice_branch", workout_advice_branch)
     builder.add_node("stats_branch", stats_branch)
     builder.add_node("recipe_branch", recipe_branch)
     builder.add_node("multi_join_node", multi_join_node)
@@ -679,6 +687,7 @@ def create_workflow(checkpointer=None):
             "profile_update_pre": "profile_update_pre",  # 混合意图中的 profile_update 预处理
             "general_node": "general_node",
             "confirm_node": "confirm_node",
+            "confirm_recovery": "confirm_recovery",
             "generic_fanout": "generic_fanout",
         }
     )
@@ -687,7 +696,8 @@ def create_workflow(checkpointer=None):
     # generic_fanout 通过 Send 动态调度分支；
     # join 节点只在各分支完成后由分支边触发，避免抢跑
     builder.add_edge("food_branch", "multi_join_node")
-    builder.add_edge("workout_branch", "multi_join_node")
+    builder.add_edge("workout_report_branch", "multi_join_node")
+    builder.add_edge("workout_advice_branch", "multi_join_node")
     builder.add_edge("stats_branch", "multi_join_node")
     builder.add_edge("recipe_branch", "multi_join_node")
     builder.add_edge("multi_join_node", END)

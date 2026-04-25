@@ -180,42 +180,6 @@ def _truncate_to_tokens(text: str, max_tokens: int, estimator: TokenEstimator) -
     return text[:lo]
 
 
-def _format_pending_stats(pending: dict) -> str:
-    """将待确认数据格式化为易读的描述文本"""
-    if not pending:
-        return "（无待确认记录）"
-
-    parts = []
-    ptype = pending.get("type", "unknown")
-
-    if ptype == "multi":
-        if pending.get("food"):
-            food = pending["food"]
-            parts.append(
-                f"食物记录：{food.get('name', '?')}（{food.get('calories', 0)} kcal，{food.get('protein', 0)}g 蛋白）"
-            )
-        if pending.get("workout"):
-            workout = pending["workout"]
-            parts.append(
-                f"运动记录：{workout.get('type', '?')}（{workout.get('duration', 0)}分钟，{workout.get('calories', 0)} kcal）"
-            )
-    elif ptype == "meal":
-        data = pending.get("data", {})
-        parts.append(
-            f"食物记录：{data.get('name', '?')}（{data.get('calories', 0)} kcal，{data.get('protein', 0)}g 蛋白）"
-        )
-    elif ptype == "workout":
-        data = pending.get("workout", pending.get("data", {}))
-        parts.append(
-            f"运动记录：{data.get('type', '?')}（{data.get('duration', 0)}分钟，{data.get('calories', 0)} kcal）"
-        )
-
-    if not parts:
-        return "（待确认数据格式未知）"
-
-    return "、".join(parts)
-
-
 # ============ 系统人设提示词 ============
 
 SYSTEM_PROMPTS: Dict[str, str] = {
@@ -229,12 +193,16 @@ SYSTEM_PROMPTS: Dict[str, str] = {
 - 碳水化合物 (g)
 
 直接回复分析结果，不需要额外解释。""",
-    "workout": """你是一个健身教练专家。请根据以下信息回答用户的问题。
+    "workout": """你是一个健身教练专家。请根据以下信息回答用户的健身问题。
 
-规则：
-- 如果用户同时包含运动记录和运动咨询，你必须同时处理：先确认运动记录，再回答运动问题
-- 回答运动问题时，给出具体动作名称、组数、次数、注意事项等专业建议
+回答要求：
+- 给出具体动作名称、组数、次数、注意事项等专业建议
 - 直接回复内容，不需要额外解释""",
+    "workout_report": """你是一个运动记录助手。请确认用户的运动数据。
+
+回复内容：
+- 确认运动类型、时长、预估消耗
+- 简洁明了，不需要额外建议""",
     "recipe": """你是一个营养师。根据用户的饮食目标和限制，推荐合适的食谱。
 
 请根据以上信息，推荐合适的食谱组合，确保：
@@ -930,7 +898,8 @@ def _extract_branch_input(intent: str, text: str) -> str:
 
     intent_keywords = {
         "food": ("吃", "喝", "餐", "饭", "菜", "食", "热量", "蛋白", "碳水", "脂肪", "摄入"),
-        "workout": ("跑", "走", "骑", "游", "练", "训", "拉伸", "放松", "恢复", "运动", "健身", "消耗", "锻炼"),
+        "workout": ("怎么", "如何", "练", "训", "拉伸", "放松", "恢复", "健身", "锻炼", "动作", "组", "次"),
+        "workout_report": ("跑", "走", "骑", "游", "练了", "做了", "运动", "消耗", "公里", "分钟"),
         "recipe": ("食谱", "推荐", "怎么吃", "搭配", "菜单", "晚餐", "午餐", "早餐", "加餐"),
         "stats_query": ("统计", "总量", "累计", "今日", "今天", "剩余", "消耗", "摄入"),
     }

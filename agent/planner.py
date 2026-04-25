@@ -35,20 +35,15 @@ SPECIAL_INTENTS = {"confirm", "profile_update"}
 # 业务意图（可并行执行）
 BUSINESS_INTENTS = {"food", "food_report", "workout", "workout_report", "recipe", "stats_query", "recovery"}
 
-# 意图别名映射（仅用于单意图时的降级，不再合并多意图）
-INTENT_ALIASES = {
-    # 注意：多意图场景下不再归一化，保留 food_report / workout_report 作为独立意图
-}
-
 # 意图 → 分支节点名映射
 INTENT_TO_BRANCH = {
     "food": "food_branch",
     "food_report": "food_branch",
-    "workout": "workout_branch",
-    "workout_report": "workout_branch",
+    "workout": "workout_advice_branch",
+    "workout_report": "workout_report_branch",
     "recipe": "recipe_branch",
     "stats_query": "stats_branch",
-    "recovery": "workout_branch",  # recovery 复用 workout_branch（运动后拉伸/恢复指导）
+    "recovery": "workout_advice_branch",  # recovery 复用 advice 分支（运动后拉伸/恢复指导）
 }
 
 

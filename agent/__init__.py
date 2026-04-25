@@ -3,7 +3,8 @@ from agent.memory import get_memory_agent, MemoryAgent
 from agent.state import AgentState, UserProfile, DailyStats, ImageInfo
 from agent.router_agent import RouterAgent
 from agent.food_agent import FoodAgent
-from agent.workout_agent import WorkoutAgent
+from agent.workout_report_agent import WorkoutReportAgent
+from agent.workout_advice_agent import WorkoutAdviceAgent
 from agent.recipe_agent import RecipeAgent
 from agent.graph import create_workflow, default_checkpointer, get_postgres_checkpointer, get_memory_checkpointer
 from agent.context_manager import ContextManager, get_context_manager, TokenEstimator, get_token_estimator
@@ -29,7 +30,8 @@ __all__ = [
     # Agents
     "RouterAgent",
     "FoodAgent",
-    "WorkoutAgent",
+    "WorkoutReportAgent",
+    "WorkoutAdviceAgent",
     "RecipeAgent",
     # Workflow
     "create_workflow",

@@ -4,7 +4,7 @@ from agent.memory import get_memory_agent
 from agent.context_manager import get_context_manager
 from agent.stream_utils import emit_trace, emit_event
 
-INTENT_TYPES = ["food", "workout", "recipe", "stats_query", "profile_update", "confirm", "general", "food_report", "workout_report"]
+INTENT_TYPES = ["food", "workout", "recipe", "stats_query", "profile_update", "confirm", "general", "food_report", "workout_report", "recovery"]
 
 CONFIRM_WORDS = ["是", "好的", "yes", "确认", "计入", "嗯", "ok", "okay"]
 DENY_WORDS = ["no", "取消", "不算", "不计入"]
@@ -12,6 +12,9 @@ DENY_WORDS = ["no", "取消", "不算", "不计入"]
 # 预计算的集合，用于快速查找
 _CONFIRM_WORDS_SET = set(CONFIRM_WORDS)
 _DENY_WORDS_SET = set(DENY_WORDS)
+
+# 恢复/拉伸相关关键词（用于检测 recovery 意图）
+RECOVERY_KEYWORDS = ["拉伸", "放松", "恢复", "放松肌肉", "拉伸运动", "放松训练", "肌肉恢复", "运动后拉伸", "运动后放松", "如何拉伸", "怎么拉伸", "拉伸一下", "放松一下", "恢复训练", "cool down", "cooldown", "stretching", "stretch"]
 
 
 class RouterAgent:
@@ -106,7 +109,9 @@ class RouterAgent:
                 "classify_intent",
                 state,
             )
-            print(f"[Router] classify_intent - 对话历史 messages 数量: {len(state.get('messages', []))}")
+            # 注意：build_prompt_messages 内部会使用窗口化的对话历史（最近 N 轮）
+            # 这里打印的是实际用于 LLM 的消息数量，不是 state 中完整 messages 的数量
+            print(f"[Router] classify_intent - LLM 输入消息数量: {len(messages)}")
 
             response = self.llm.invoke(messages)
             raw_intent = response.content.strip().lower()
@@ -119,13 +124,42 @@ class RouterAgent:
 
             # 判断是否是用户主动报告吃食物或做运动
             is_reporting = self._is_user_reporting_food_or_workout(user_input)
+            
+            # 检测恢复/拉伸意图（在升级之前检测，避免被误判为 workout）
+            has_recovery_intent = self._has_recovery_keywords(user_input)
 
-            # 如果是主动报告，将列表中所有 food/workout 升级为 food_report/workout_report
+            # 如果是主动报告，只在缺少 report 语义时补升级。
+            # 这样可以保留 LLM 已经识别出的混合意图，例如：
+            # ["workout_report", "workout"] 不应被折叠成 ["workout_report"]。
+            # 但如果包含恢复/拉伸关键词，仍然把 workout 转成 recovery。
             if is_reporting:
-                valid_intents = [
-                    "food_report" if i == "food" else ("workout_report" if i == "workout" else i)
-                    for i in valid_intents
-                ]
+                original_intents = list(valid_intents)
+                upgraded_intents = []
+                for intent in original_intents:
+                    if intent == "food":
+                        if "food_report" in original_intents:
+                            upgraded_intents.append("food")
+                        else:
+                            upgraded_intents.append("food_report")
+                    elif intent == "workout":
+                        if has_recovery_intent:
+                            upgraded_intents.append("recovery")
+                        elif "workout_report" in original_intents:
+                            upgraded_intents.append("workout")
+                        else:
+                            upgraded_intents.append("workout_report")
+                    else:
+                        upgraded_intents.append(intent)
+                valid_intents = upgraded_intents
+                # 去重（升级后可能产生重复，如 workout_report + workout → workout_report + workout_report）
+                seen = set()
+                deduped = []
+                for i in valid_intents:
+                    if i not in seen:
+                        seen.add(i)
+                        deduped.append(i)
+                valid_intents = deduped
+                
                 # 如果升级后仍然是 general（即 LLM 没有检测到 food/workout），
                 # 则直接根据关键词强制设置多意图
                 if valid_intents == ["general"]:
@@ -265,6 +299,13 @@ class RouterAgent:
         workout_report_words = ["跑了", "跑了步", "做了", "做了运动", "健身了", "练了", "锻炼了", "运动了", "跑步了", "游泳了", "骑车了", "走路了", "跳绳了", "打球了", "健身"]
         text_lower = text.lower()
         return any(word in text_lower for word in food_report_words + workout_report_words)
+
+    def _has_recovery_keywords(self, text: str) -> bool:
+        """判断用户是否包含恢复/拉伸相关关键词"""
+        if not text:
+            return False
+        text_lower = text.lower()
+        return any(kw in text_lower for kw in RECOVERY_KEYWORDS)
 
     def handle_profile_update(self, state: AgentState) -> AgentState:
         """处理档案更新"""

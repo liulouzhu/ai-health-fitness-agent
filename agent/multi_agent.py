@@ -25,7 +25,7 @@ from agent.memory import get_memory_agent
 # 分支节点名 → 意图过滤器映射（用于动态 fan-out）
 BRANCH_INTENT_FILTERS = {
     "food_branch": {"food", "food_report"},
-    "workout_branch": {"workout", "workout_report"},
+    "workout_branch": {"workout", "workout_report", "recovery"},
     "stats_branch": {"stats_query"},
     "recipe_branch": {"recipe"},
 }
@@ -51,6 +51,7 @@ _CLEANED_FIELDS = (
     "food_pending_conf", "workout_pending_conf",
     "branch_results", "food_result", "workout_result", "stats_result", "recipe_result",
     "pending_confirmation", "requires_confirmation", "pending_stats",
+    "source_intents",
 )
 
 
@@ -71,13 +72,14 @@ def generic_fanout(state: AgentState) -> Command:
     三层解耦的执行层：
     1. 从 intent_plan 读取 planned_branches
     2. 根据 intents 过滤每个分支的意图
-    3. 动态生成 Send 列表
+    3. 动态生成 Send 列表，同时传递分支专属的 prompt bundle
     """
     print(f"[Fanout] generic_fanout - 开始")
     state["route_decision"] = "generic_fanout"
     
     intent_plan = state.get("intent_plan")
     intents = state.get("intents", [state.get("intent", "general")])
+    branch_bundles = state.get("branch_prompt_bundles") or {}
     
     # 如果有 intent_plan，使用 planned_branches
     if intent_plan:
@@ -92,22 +94,30 @@ def generic_fanout(state: AgentState) -> Command:
     sends = []
     for branch_name in planned_branches:
         intent_filter = BRANCH_INTENT_FILTERS.get(branch_name, set())
-        # 过滤出属于该分支的意图
+        # 过滤出属于该分支的意图（保留原始形式，如 food_report / workout_report）
         filtered_intents = [i for i in intents if i in intent_filter]
         
         if filtered_intents:
             # 创建分支 state
             branch_state = _clear_state(dict(state))
-            # 设置分支的 intent（归一化后）
+            # 设置分支的 intent（归一化后，用于路由）
             branch_state["intent"] = _normalize_intent(filtered_intents[0])
+            # 保留原始意图列表（用于 agent 内判断 reporting 语义）
+            branch_state["source_intents"] = list(filtered_intents)
+            
+            # 传递该分支的 prompt bundle（如果存在）
+            if branch_name in branch_bundles:
+                branch_state["branch_prompt_bundle"] = branch_bundles[branch_name]
+                print(f"[Fanout] generic_fanout - 传递 {branch_name} prompt bundle")
+            
             sends.append(Send(branch_name, branch_state))
-            print(f"[Fanout] generic_fanout - 添加分支: {branch_name} (intents={filtered_intents})")
+            print(f"[Fanout] generic_fanout - 添加分支: {branch_name} (intents={filtered_intents}, source_intents={filtered_intents})")
     
     if not sends:
         # 无有效分支，返回 general_node
         print(f"[Fanout] generic_fanout - 无有效分支，降级到 general_node")
         return Command(goto="general_node")
-    
+
     return Command(goto=sends)
 
 
@@ -118,7 +128,7 @@ def _infer_branches_from_intents(intents: list) -> list:
         if intent in {"food", "food_report"}:
             if "food_branch" not in branches:
                 branches.append("food_branch")
-        elif intent in {"workout", "workout_report"}:
+        elif intent in {"workout", "workout_report", "recovery"}:
             if "workout_branch" not in branches:
                 branches.append("workout_branch")
         elif intent == "stats_query":
@@ -131,7 +141,7 @@ def _infer_branches_from_intents(intents: list) -> list:
 
 
 def _normalize_intent(intent: str) -> str:
-    """归一化意图"""
+    """归一化意图（recovery 保持独立，不转换为 workout）"""
     aliases = {"food_report": "food", "workout_report": "workout"}
     return aliases.get(intent, intent)
 
@@ -139,46 +149,123 @@ def _normalize_intent(intent: str) -> str:
 # ============ 分支节点 ============
 
 def food_branch(state: AgentState) -> AgentState:
-    """Food 分支节点（由 Send 并发调度）"""
+    """Food 分支节点（由 Send 并发调度）
+    
+    消费 planner 生成的 branch_prompt_bundle，避免自己重新编排全局上下文。
+    """
     print(f"[Branch] food_branch 开始")
+    
+    # 检查是否有预生成的 prompt bundle
+    bundle = state.get("branch_prompt_bundle")
+    if bundle:
+        print(f"[Branch] food_branch - 使用预生成的 prompt bundle")
+        extra_sections = bundle.get("extra_sections", {})
+        branch_input = bundle.get("branch_input", "")
+    else:
+        # Fallback: 让 agent 自己构建
+        extra_sections = None
+        branch_input = None
+    
     food_agent = FoodAgent()
-    state = food_agent.run(state)
+    state = food_agent.run(
+        state,
+        extra_sections=extra_sections,
+        branch_input=branch_input,
+        append_history=False,
+    )
     return {
-        "food_branch_result": state.get("food_result", ""),
+        "food_branch_result": state.get("food_result") or "",
         "food_pending_conf": state.get("pending_confirmation"),
     }
 
 
 def workout_branch(state: AgentState) -> AgentState:
-    """Workout 分支节点（由 Send 并发调度）"""
+    """Workout 分支节点（由 Send 并发调度）
+    
+    消费 planner 生成的 branch_prompt_bundle，避免自己重新编排全局上下文。
+    """
     print(f"[Branch] workout_branch 开始")
+    
+    # 检查是否有预生成的 prompt bundle
+    bundle = state.get("branch_prompt_bundle")
+    if bundle:
+        print(f"[Branch] workout_branch - 使用预生成的 prompt bundle")
+        extra_sections = bundle.get("extra_sections", {})
+        branch_input = bundle.get("branch_input", "")
+    else:
+        # Fallback: 让 agent 自己构建
+        extra_sections = None
+        branch_input = None
+    
     workout_agent = WorkoutAgent()
-    state = workout_agent.run(state)
+    state = workout_agent.run(
+        state,
+        extra_sections=extra_sections,
+        branch_input=branch_input,
+        append_history=False,
+    )
     return {
-        "workout_branch_result": state.get("workout_result", ""),
+        "workout_branch_result": state.get("workout_result") or "",
         "workout_pending_conf": state.get("pending_confirmation"),
     }
 
 
 def stats_branch(state: AgentState) -> AgentState:
-    """Stats 分支节点"""
+    """Stats 分支节点
+    
+    消费 planner 生成的 branch_prompt_bundle，使用预格式化的统计上下文。
+    """
     print(f"[Branch] stats_branch 开始")
-    memory_agent = get_memory_agent()
-    summary = memory_agent.get_daily_summary()
+    
+    # 检查是否有预生成的 prompt bundle
+    bundle = state.get("branch_prompt_bundle")
+    if bundle:
+        print(f"[Branch] stats_branch - 使用预生成的 prompt bundle")
+        # 直接使用 bundle 中的 branch_context 作为统计摘要
+        branch_context = bundle.get("branch_context", "")
+        if branch_context:
+            summary = branch_context
+        else:
+            memory_agent = get_memory_agent()
+            summary = memory_agent.get_daily_summary()
+    else:
+        memory_agent = get_memory_agent()
+        summary = memory_agent.get_daily_summary()
+    
     return {
-        "stats_branch_result": summary,
-        "stats_result": summary,
+        "stats_branch_result": summary or "",
+        "stats_result": summary or "",
     }
 
 
 def recipe_branch(state: AgentState) -> AgentState:
-    """Recipe 分支节点"""
+    """Recipe 分支节点
+    
+    消费 planner 生成的 branch_prompt_bundle，直接使用预计算的营养约束。
+    """
     print(f"[Branch] recipe_branch 开始")
+    
+    # 检查是否有预生成的 prompt bundle
+    bundle = state.get("branch_prompt_bundle")
+    if bundle:
+        print(f"[Branch] recipe_branch - 使用预生成的 prompt bundle")
+        extra_sections = bundle.get("extra_sections", {})
+        branch_input = bundle.get("branch_input", "")
+    else:
+        # Fallback: 让 agent 自己构建
+        extra_sections = None
+        branch_input = None
+    
     recipe_agent = RecipeAgent()
-    state = recipe_agent.run(state)
+    state = recipe_agent.run(
+        state,
+        extra_sections=extra_sections,
+        branch_input=branch_input,
+        append_history=False,
+    )
     return {
-        "recipe_branch_result": state.get("response", ""),
-        "recipe_result": state.get("response", ""),
+        "recipe_branch_result": state.get("response") or "",
+        "recipe_result": state.get("response") or "",
     }
 
 
@@ -204,12 +291,44 @@ def multi_join_node(state: AgentState) -> dict:
     profile_result = state.get("profile_branch_result", "")
     food_conf = state.get("food_pending_conf") or {}
     workout_conf = state.get("workout_pending_conf") or {}
+    intent_plan = state.get("intent_plan") or {}
+    expected_branches = intent_plan.get("planned_branches", [])
 
+    # 详细日志：记录 join 节点收到的所有分支结果状态
     print(f"[Join] multi_join_node - food_result={bool(food_result)}, "
           f"workout_result={bool(workout_result)}, stats_result={bool(stats_result)}, "
           f"recipe_result={bool(recipe_result)}, profile_result={bool(profile_result)}")
 
+    branch_value_map = {
+        "food_branch": food_result,
+        "workout_branch": workout_result,
+        "stats_branch": stats_result,
+        "recipe_branch": recipe_result,
+    }
+    expected_nonempty = [
+        branch for branch in expected_branches
+        if branch in branch_value_map
+    ]
+    ready_branches = [
+        branch for branch in expected_nonempty
+        if branch_value_map.get(branch) is not None
+    ]
+
+    if expected_nonempty and len(ready_branches) < len(expected_nonempty):
+        pending = [branch for branch in expected_nonempty if branch not in ready_branches]
+        print(
+            f"[Join] multi_join_node - 分支未完成，等待: {pending}，"
+            f"current keys: {list(state.keys())}"
+        )
+        return {
+            "route_decision": "multi_join_wait",
+        }
+
+    # 检查是否有任何分支结果
+    has_any_result = any([food_result, workout_result, stats_result, recipe_result, profile_result])
+
     # 合并各分支响应
+    # 标题由 multi_join_node 统一负责（方案A），其他节点不得重复添加
     sections = []
     if food_result:
         sections.append(f"**食物记录**\n{food_result}")
@@ -222,7 +341,14 @@ def multi_join_node(state: AgentState) -> dict:
     if profile_result:
         sections.append(f"**档案更新**\n{profile_result}")
 
-    final_response = "\n\n".join(sections) if sections else "已处理您的请求。"
+    # 只有当有分支结果时才合并；空字符串不应被当作有效结果
+    # 注意：fallback "已处理您的请求。" 绝不作为 food/workout 分支的正文输出
+    if not sections:
+        if not has_any_result:
+            print(f"[Join] WARNING: 所有分支结果均为空！state keys: {list(state.keys())}")
+        final_response = "抱歉，处理您的请求时出现问题，请重试。"
+    else:
+        final_response = "\n\n".join(sections)
 
     # 确定 pending_confirmation（analysis_text 只保留摘要，不保留全文）
     unified_conf = None
@@ -257,26 +383,14 @@ def multi_join_node(state: AgentState) -> dict:
     if unified_conf:
         final_response += "\n\n---\n是否将上述记录计入今日统计？（是/否）"
 
-    # 返回增量字段，不包含 state 完整副本
+    # 只返回 join 节点需要写入的字段
+    # 不要返回清理字段（如 food_branch_result=None），这会与 branch 节点在同一 superstep 冲突
+    # 清理工作交给 graph 完成后的 trim_state 处理
     return {
         "route_decision": "multi_join_node",
         "final_response": final_response,
         "response": final_response,
         "pending_confirmation": unified_conf,
         "requires_confirmation": bool(unified_conf),
-        # 清理分支结果字段
-        "food_branch_result": None,
-        "workout_branch_result": None,
-        "stats_branch_result": None,
-        "recipe_branch_result": None,
-        "profile_branch_result": None,
-        "food_pending_conf": None,
-        "workout_pending_conf": None,
-        "food_result": None,
-        "workout_result": None,
-        "stats_result": None,
-        "recipe_result": None,
     }
-
-
 

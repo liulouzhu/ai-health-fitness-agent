@@ -128,6 +128,12 @@ def trim_state(state: AgentState) -> None:
     # 5. 清空 agent 原始结果（join 后不再需要）
     for key in ("food_result", "workout_result", "stats_result", "recipe_result"):
         state.pop(key, None)
+    
+    # 6. 清空分支结果字段（fan-out join 后不再需要）
+    for key in ("food_branch_result", "workout_branch_result", "stats_branch_result", 
+                "recipe_branch_result", "profile_branch_result",
+                "food_pending_conf", "workout_pending_conf"):
+        state.pop(key, None)
 
 
 # 别名兼容旧代码
@@ -392,6 +398,11 @@ def confirm_node(state: AgentState) -> AgentState:
 
     首次进入：设置 pending_confirmation，显示确认提示
     routing_func 根据 pending_confirmation.confirmed 是否为 None 判断是否在等待回复
+
+    标题渲染规则（方案A：后端统一负责标题）：
+    - 单意图确认：本节点添加标题
+    - 多意图确认（log_both）：不在此添加标题，因为 multi_join_node 已经添加过了
+    - 多意图场景下，优先从 food_branch_result / workout_branch_result 读取内容
     """
     log_node("confirm_node")
     emit_trace("node_start", "confirm_node", "正在处理确认请求...")
@@ -402,12 +413,32 @@ def confirm_node(state: AgentState) -> AgentState:
     candidate_meal = pending_conf.get("candidate_meal")
     candidate_workout = pending_conf.get("candidate_workout")
 
+    # 辅助函数：按优先级读取分支结果
+    # 多意图场景下 branch_result 字段有值，单意图场景下 food_result / workout_result 有值
+    def _read_food_analysis(state_dict):
+        """优先读取 food_branch_result（多意图），回退到 food_result（单意图）"""
+        return (
+            state_dict.get("food_branch_result")
+            or state_dict.get("food_result")
+            or state_dict.get("response")
+            or ""
+        )
+
+    def _read_workout_analysis(state_dict):
+        """优先读取 workout_branch_result（多意图），回退到 workout_result（单意图）"""
+        return (
+            state_dict.get("workout_branch_result")
+            or state_dict.get("workout_result")
+            or state_dict.get("response")
+            or ""
+        )
+
     # 设置 pending_confirmation（confirmed=None 表示"等待回复"）
     # routing_func 根据 pending_confirmation 是否存在来判断：
     # - 有数据且 confirmed=None → 用户在回复确认提示 → routing_func 会路由到 confirm_recovery
     # - 无数据 → 新确认周期开始 → 显示确认提示
     if action == "log_meal" and candidate_meal:
-        analysis = state.get("food_result", state.get("response", ""))
+        analysis = _read_food_analysis(state)
         state["pending_confirmation"] = {
             "action": "log_meal",
             "candidate_meal": candidate_meal,
@@ -420,7 +451,7 @@ def confirm_node(state: AgentState) -> AgentState:
             f"是否将上述食物计入今日热量统计？（是/否）"
         )
     elif action == "log_workout" and candidate_workout:
-        analysis = state.get("workout_result", state.get("response", ""))
+        analysis = _read_workout_analysis(state)
         state["pending_confirmation"] = {
             "action": "log_workout",
             "candidate_meal": None,
@@ -433,20 +464,39 @@ def confirm_node(state: AgentState) -> AgentState:
             f"是否将上述运动计入今日消耗统计？（是/否）"
         )
     elif action == "log_both":
-        food_analysis = state.get("food_result", "")
-        workout_analysis = state.get("workout_result", "")
+        # 多意图确认：读取分支结果字段，不重复添加标题
+        # （标题已在 multi_join_node 中统一添加）
+        food_analysis = _read_food_analysis(state)
+        workout_analysis = _read_workout_analysis(state)
         state["pending_confirmation"] = {
             "action": "log_both",
             "candidate_meal": candidate_meal,
             "candidate_workout": candidate_workout,
-            "analysis_text": "（待确认食物+运动记录）",
+            "analysis_text": "（含食物和运动记录，请确认）",
             "confirmed": None,
         }
-        state["final_response"] = (
-            f"**食物记录**\n{food_analysis}\n\n---\n"
-            f"**运动记录**\n{workout_analysis}\n\n---\n"
-            f"是否将上述记录计入今日统计？（是/否）"
-        )
+        # 只有当分支结果为空时（单意图 fallback），才添加标题
+        # 多意图场景下 analysis 内容已包含标题，直接拼接确认提示
+        if food_analysis and workout_analysis:
+            # 多意图：标题已在 multi_join_node 中添加，不重复
+            state["final_response"] = (
+                f"{food_analysis}\n\n{workout_analysis}\n\n---\n"
+                f"是否将上述记录计入今日统计？（是/否）"
+            )
+        elif food_analysis:
+            state["final_response"] = (
+                f"**食物记录**\n{food_analysis}\n\n---\n"
+                f"是否将上述食物计入今日热量统计？（是/否）"
+            )
+        elif workout_analysis:
+            state["final_response"] = (
+                f"**运动记录**\n{workout_analysis}\n\n---\n"
+                f"是否将上述运动计入今日消耗统计？（是/否）"
+            )
+        else:
+            state["final_response"] = (
+                f"是否将上述记录计入今日统计？（是/否）"
+            )
     else:
         # 没有待确认内容
         state["final_response"] = "没有待确认的记录。"
@@ -479,7 +529,12 @@ def commit_node(state: AgentState) -> AgentState:
                 memory_agent.update_daily_stats("workout", workout)
 
         summary = memory_agent.get_daily_summary()
-        state["final_response"] = f"已计入统计。\n\n{summary}"
+        # 保留 LLM 生成的分析/建议内容（如有），避免 commit 覆盖掉回答
+        analysis_text = pending_conf.get("analysis_text", "")
+        if analysis_text and analysis_text not in ("（待确认食物记录）", "（待确认运动记录）", "（含食物和运动记录，请确认）", "（请确认是否计入）"):
+            state["final_response"] = f"{analysis_text}\n\n---\n已计入统计。\n\n{summary}"
+        else:
+            state["final_response"] = f"已计入统计。\n\n{summary}"
         state["response"] = state["final_response"]
         print("[Commit] 已写入 daily_stats")
     elif confirmed is False:
@@ -629,8 +684,12 @@ def create_workflow(checkpointer=None):
     )
 
     # === fan-out 节点的边 ===
-    # generic_fanout 返回 [Send(...)] 调度分支，分支执行完后流向 join_node
-    builder.add_edge("generic_fanout", "multi_join_node")
+    # generic_fanout 通过 Send 动态调度分支；
+    # join 节点只在各分支完成后由分支边触发，避免抢跑
+    builder.add_edge("food_branch", "multi_join_node")
+    builder.add_edge("workout_branch", "multi_join_node")
+    builder.add_edge("stats_branch", "multi_join_node")
+    builder.add_edge("recipe_branch", "multi_join_node")
     builder.add_edge("multi_join_node", END)
 
     # profile_update_pre 执行完后路由到 generic_fanout 执行业务意图
@@ -644,9 +703,13 @@ def create_workflow(checkpointer=None):
     # confirm_recovery 路由：
     # - 用户确认/取消（confirmed=True/False）→ commit_node
     # - 用户回复不明确 → confirm_node 重新显示提示
+    def _confirm_recovery_route(state):
+        pending_conf = state.get("pending_confirmation") or {}
+        return "commit_node" if pending_conf.get("confirmed") is not None else "confirm_node"
+    
     builder.add_conditional_edges(
         "confirm_recovery",
-        lambda state: "commit_node" if state.get("pending_confirmation", {}).get("confirmed") is not None else "confirm_node",
+        _confirm_recovery_route,
         {"commit_node": "commit_node", "confirm_node": "confirm_node"}
     )
     builder.add_edge("commit_node", END)
@@ -656,25 +719,27 @@ def create_workflow(checkpointer=None):
     # 1. requires_confirmation=True + confirmed=True → 直接 commit_node（food_report / workout_report）
     # 2. requires_confirmation=True + confirmed=None → confirm_node（询问用户）
     # 3. requires_confirmation=False → END（无副作用的节点，如 general/stats/recipe）
+    def _food_generate_route(state):
+        if not state.get("requires_confirmation"):
+            return END
+        pending_conf = state.get("pending_confirmation") or {}
+        return "commit_node" if pending_conf.get("confirmed") is True else "confirm_node"
+    
     builder.add_conditional_edges(
         "food_generate",
-        lambda state: (
-            "commit_node"
-            if state.get("requires_confirmation")
-            and state.get("pending_confirmation", {}).get("confirmed") is True
-            else ("confirm_node" if state.get("requires_confirmation") else END)
-        ),
+        _food_generate_route,
         {"confirm_node": "confirm_node", "commit_node": "commit_node", END: END}
     )
 
+    def _workout_generate_route(state):
+        if not state.get("requires_confirmation"):
+            return END
+        pending_conf = state.get("pending_confirmation") or {}
+        return "commit_node" if pending_conf.get("confirmed") is True else "confirm_node"
+    
     builder.add_conditional_edges(
         "workout_generate",
-        lambda state: (
-            "commit_node"
-            if state.get("requires_confirmation")
-            and state.get("pending_confirmation", {}).get("confirmed") is True
-            else ("confirm_node" if state.get("requires_confirmation") else END)
-        ),
+        _workout_generate_route,
         {"confirm_node": "confirm_node", "commit_node": "commit_node", END: END}
     )
 

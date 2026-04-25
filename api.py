@@ -232,7 +232,7 @@ def _build_graph_input(request: ChatRequest, restored_state: dict) -> dict:
         },
         "route_decision": None,
         # === 对话运行时状态（继承）===
-        "messages": restored_state.get("messages", []),
+        # 注意：不要传入 messages，由 checkpointer 管理，避免 reducer 重复累加
         "last_intent": restored_state.get("last_intent"),
         "profile_complete": restored_state.get("profile_complete"),
         "summary_buffer": restored_state.get("summary_buffer", []),
@@ -294,30 +294,96 @@ def _delete_checkpoint(thread_id: str) -> None:
     try:
         conn = psycopg.connect(db_url, autocommit=True)
         cur = conn.cursor()
-        cur.execute(
-            "DELETE FROM checkpointer.checkpoints WHERE thread_id = %s",
-            (thread_id,)
-        )
+        # 尝试删除 checkpoints 表中的记录（如果表存在）
+        try:
+            cur.execute(
+                "DELETE FROM checkpointer.checkpoints WHERE thread_id = %s",
+                (thread_id,)
+            )
+            print(f"[Checkpoint] Deleted corrupt checkpoint for thread_id={thread_id}")
+        except Exception as e:
+            if "does not exist" in str(e):
+                # 表不存在，可能是旧版 schema，尝试其他表
+                try:
+                    cur.execute(
+                        "DELETE FROM checkpoints WHERE thread_id = %s",
+                        (thread_id,)
+                    )
+                    print(f"[Checkpoint] Deleted corrupt checkpoint from legacy table for thread_id={thread_id}")
+                except Exception:
+                    print(f"[Checkpoint] Could not delete checkpoint, table may not exist")
+            else:
+                raise
         cur.close()
         conn.close()
-        print(f"[Checkpoint] Deleted corrupt checkpoint for thread_id={thread_id}")
     except Exception as e:
         print(f"[Checkpoint] Failed to delete corrupt checkpoint: {e}")
 
 
+def _clear_corrupt_state(thread_id: str, config: dict) -> None:
+    """清除损坏的 checkpoint 状态
+    
+    当 checkpoint 损坏时，使用 update_state 清空关键字段，
+    让下一轮请求能正常执行。
+    """
+    try:
+        # 尝试使用 update_state 清空 messages
+        app_obj.update_state(
+            config,
+            {
+                "messages": [],
+                "intent": "general",
+                "intents": [],
+                "last_intent": None,
+                "route_decision": None,
+                "intent_plan": None,
+                "pending_confirmation": {},
+                "requires_confirmation": False,
+                "food_branch_result": None,
+                "workout_branch_result": None,
+                "stats_branch_result": None,
+                "recipe_branch_result": None,
+                "profile_branch_result": None,
+                "food_pending_conf": None,
+                "workout_pending_conf": None,
+                "final_response": None,
+                "response": None,
+            }
+        )
+        print(f"[Checkpoint] Cleared corrupt state for thread_id={thread_id}")
+    except Exception as e:
+        print(f"[Checkpoint] Failed to clear corrupt state: {e}")
+        # 如果 update_state 也失败，尝试删除 checkpoint
+        _delete_checkpoint(thread_id)
+
+
 def _try_restore_state(thread_id: str, config: dict) -> dict:
-    """尝试恢复 checkpointer 状态，损坏时删除后返回空 dict"""
+    """尝试恢复 checkpointer 状态，损坏时清除后返回空 dict"""
     try:
         current_state = app_obj.get_state(config=config)
         if current_state is not None:
-            return getattr(current_state, 'values', None) or {}
+            values = getattr(current_state, 'values', None) or {}
+            # 检查 messages 是否过大（超过 1000 条视为异常）
+            messages = values.get("messages", [])
+            if len(messages) > 1000:
+                print(f"[Checkpoint] Messages too large ({len(messages)}), clearing...")
+                _clear_corrupt_state(thread_id, config)
+                return {}
+            return values
         return {}
     except Exception as e:
-        if "invalid memory alloc request" in str(e):
-            print(f"[Checkpoint] Corrupt checkpoint detected for thread_id={thread_id}, deleting...")
-            _delete_checkpoint(thread_id)
+        error_str = str(e)
+        if "invalid memory alloc request" in error_str or "Corrupt" in error_str:
+            print(f"[Checkpoint] Corrupt checkpoint detected for thread_id={thread_id}, clearing...")
+            _clear_corrupt_state(thread_id, config)
             return {}
-        raise
+        # 其他错误也尝试清除状态
+        print(f"[Checkpoint] Error restoring state: {e}, attempting to clear...")
+        try:
+            _clear_corrupt_state(thread_id, config)
+        except Exception:
+            pass
+        return {}
 
 
 @app.post("/chat/stream")
@@ -335,7 +401,8 @@ async def chat_stream(request: ChatRequest):
     # 恢复 checkpointer 状态（自动检测并清除损坏的 checkpoint）
     try:
         state_data = _try_restore_state(thread_id, config)
-    except Exception:
+    except Exception as e:
+        print(f"[Checkpoint] Failed to restore state: {e}, starting fresh")
         state_data = {}
 
     graph_input = _build_graph_input(request, state_data)
@@ -353,12 +420,31 @@ async def chat_stream(request: ChatRequest):
             committed = None
             last_node_name = None
 
-            for chunk in app_obj.stream(
-                graph_input,
-                config=config,
-                stream_mode=["updates", "custom"],
-                version="v2",
-            ):
+            try:
+                stream_iter = app_obj.stream(
+                    graph_input,
+                    config=config,
+                    stream_mode=["updates", "custom"],
+                    version="v2",
+                )
+            except Exception as stream_err:
+                # 如果 stream 初始化失败（可能是 checkpoint 损坏），
+                # 尝试清除状态后重试
+                if "invalid memory alloc request" in str(stream_err) or "Corrupt" in str(stream_err):
+                    print(f"[Checkpoint] Stream init failed due to corrupt checkpoint, clearing and retrying...")
+                    _clear_corrupt_state(thread_id, config)
+                    # 使用新的 config 重试（避免读取损坏的 checkpoint）
+                    new_config = {"configurable": {"thread_id": f"{thread_id}_fresh"}}
+                    stream_iter = app_obj.stream(
+                        graph_input,
+                        config=new_config,
+                        stream_mode=["updates", "custom"],
+                        version="v2",
+                    )
+                else:
+                    raise
+
+            for chunk in stream_iter:
                 if isinstance(chunk, tuple) and len(chunk) == 2:
                     chunk_type, data = chunk
                 elif isinstance(chunk, dict):
@@ -406,7 +492,9 @@ async def chat_stream(request: ChatRequest):
                         or current_state.get("response")
                         or final_response
                     )
-                    committed = current_state.get("pending_confirmation", {}).get("confirmed")
+                    # 安全读取 pending_confirmation（可能为 None）
+                    pending_conf = current_state.get("pending_confirmation") or {}
+                    committed = pending_conf.get("confirmed")
 
                 # 让 ASGI 事件循环有机会立即刷出当前 SSE 片段
                 import asyncio
@@ -432,6 +520,8 @@ async def chat_stream(request: ChatRequest):
 
             # 流式输出最终文本
             if final_response:
+                # 调试日志：在 SSE 输出前打印最终响应，用于排查标题重复等问题
+                print(f"[SSE] final_response before SSE: {final_response[:500]}...")
                 for char in final_response:
                     yield _sse_json({"type": "text", "content": char})
 
@@ -470,9 +560,20 @@ async def _run_post_graph_memory(result_state: dict, request: ChatRequest, confi
         memory_agent.extract_and_save_preferences(request.message)
         if memory_agent.should_summarize(result_state, threshold=10):
             memory_agent.summarize_conversations(result_state)
+        
+        # 确保 messages 被正确更新（多意图场景下分支不会更新主 state 的 messages）
+        messages = result_state.get("messages", [])
+        if not messages or messages[-1].get("content") != response_text:
+            # 如果 messages 末尾不是当前回复，追加这轮对话
+            from agent.context_manager import get_context_manager
+            ctx_mgr = get_context_manager()
+            ctx_mgr.append_messages(result_state, request.message, response_text)
+            print(f"[Memory] 补充更新 messages，当前数量: {len(result_state.get('messages', []))}")
+        
         app_obj.update_state(
             config,
             {
+                "messages": result_state.get("messages", []),
                 "summary_buffer": result_state.get("summary_buffer", []),
                 "turn_count": result_state.get("turn_count", 0),
                 "last_summary_turn": result_state.get("last_summary_turn", 0),

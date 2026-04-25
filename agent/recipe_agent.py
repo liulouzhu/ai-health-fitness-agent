@@ -82,12 +82,32 @@ class RecipeAgent:
             f"{constraints_str}"
         )
 
-    def run(self, state: AgentState) -> AgentState:
-        """执行食谱推荐"""
+    def run(
+        self,
+        state: AgentState,
+        extra_sections: dict = None,
+        branch_input: str = None,
+        append_history: bool = True,
+    ) -> AgentState:
+        """执行食谱推荐
+
+        Args:
+            state: LangGraph AgentState
+            extra_sections: 可选，由 planner 预生成的分支上下文。如果提供，优先使用。
+            branch_input: 可选，由 planner 预生成的分支专属输入片段。如果提供，优先使用。
+        """
         print(f"[RecipeAgent] run - 开始食谱推荐")
+        
+        # 优先使用分支专属输入，否则使用原始输入
+        if branch_input:
+            user_input = branch_input
+            print(f"[RecipeAgent] run - 使用分支专属输入: {user_input[:50]}...")
+        else:
+            user_input = state.get("input_message", "")
+            print(f"[RecipeAgent] run - 使用原始输入: {user_input[:50]}...")
+        
         try:
             ctx_mgr = get_context_manager()
-            user_input = state.get("input_message", "")
 
             # 1. 通过 ContextManager 获取业务上下文（用于构建检索 query）
             bundle = ctx_mgr.build_context("recipe", state)
@@ -117,19 +137,26 @@ class RecipeAgent:
                 print(f"[RecipeAgent] 本地检索足够，跳过 Tavily")
 
             # 4. 通过 ContextManager 统一构建消息（含 token 预算管理）
-            preferences = ctx_mgr.get_preferences_str()
-            if not preferences:
-                preferences = "（暂无偏好记录）"
+            # 如果有预生成的 extra_sections，优先使用；否则自己构建
+            if extra_sections is not None:
+                print(f"[RecipeAgent] run - 使用预生成的 extra_sections")
+                # 合并预生成的 sections 和检索内容
+                extra_sections = dict(extra_sections)
+                extra_sections["参考食谱"] = retrieved_content or "无相关食谱"
+            else:
+                preferences = ctx_mgr.get_preferences_str()
+                if not preferences:
+                    preferences = "（暂无偏好记录）"
 
-            extra_sections = {
-                "用户营养约束": (
-                    f"剩余热量：{ctx['remaining_calories']} kcal；"
-                    f"剩余蛋白质：{ctx['remaining_protein']} g；"
-                    f"健身目标：{ctx['goal']}"
-                ),
-                "用户偏好": preferences,
-                "参考食谱": retrieved_content or "无相关食谱",
-            }
+                extra_sections = {
+                    "用户营养约束": (
+                        f"剩余热量：{ctx['remaining_calories']} kcal；"
+                        f"剩余蛋白质：{ctx['remaining_protein']} g；"
+                        f"健身目标：{ctx['goal']}"
+                    ),
+                    "用户偏好": preferences,
+                    "参考食谱": retrieved_content or "无相关食谱",
+                }
             messages = ctx_mgr.build_prompt_messages(
                 "recipe",
                 state,
@@ -146,5 +173,6 @@ class RecipeAgent:
             state["response"] = "抱歉，食谱推荐服务暂时不可用，请稍后重试。"
 
         # 更新对话历史（使用 ContextManager 统一管理滑动窗口）
-        ctx_mgr.append_messages(state, state["input_message"], state.get("response", ""))
+        if append_history:
+            ctx_mgr.append_messages(state, state["input_message"], state.get("response", ""))
         return state

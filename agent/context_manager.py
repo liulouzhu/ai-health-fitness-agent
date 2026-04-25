@@ -230,7 +230,11 @@ SYSTEM_PROMPTS: Dict[str, str] = {
 
 直接回复分析结果，不需要额外解释。""",
     "workout": """你是一个健身教练专家。请根据以下信息回答用户的问题。
-直接回复健身指导内容，不需要额外解释。""",
+
+规则：
+- 如果用户同时包含运动记录和运动咨询，你必须同时处理：先确认运动记录，再回答运动问题
+- 回答运动问题时，给出具体动作名称、组数、次数、注意事项等专业建议
+- 直接回复内容，不需要额外解释""",
     "recipe": """你是一个营养师。根据用户的饮食目标和限制，推荐合适的食谱。
 
 请根据以上信息，推荐合适的食谱组合，确保：
@@ -242,12 +246,36 @@ SYSTEM_PROMPTS: Dict[str, str] = {
 直接回复推荐内容，不需要额外解释。""",
     "general": """你是一个健身健康智能助手，可以进行日常对话。
 请回复用户，保持对话连贯性。如果用户问到健身或饮食相关问题，可以适当引导。""",
-    "classify_intent": """你是一个智能路由器，负责判断用户意图。
+    "classify_intent": """你是一个意图分类器。你的唯一任务是识别用户输入的意图类别。
 
-可选意图：food, workout, recipe, stats_query, profile_update, confirm, general, food_report, workout_report
+规则：
+1. 只返回意图标签，不回答用户的问题
+2. 不要提供任何解释、建议或内容
+3. 如果用户问问题，只判断意图，不回答问题
+4. 重要：用户一句话可能包含多个意图，必须全部识别出来！
 
-重要：一个用户输入可能包含多个意图，以逗号分隔返回。
-只返回意图标签，不要任何解释。""",
+可选意图标签（只选这些中的一个或多个）：
+- food: 用户想分析食物营养或询问食物信息
+- food_report: 用户主动报告吃了什么（如"我吃了..."、"吃了..."）
+- workout: 用户想了解运动或健身信息（如"怎么练..."、"如何拉伸"）
+- workout_report: 用户主动报告做了什么运动（如"跑了..."、"练了..."）
+- recipe: 用户想要食谱推荐
+- stats_query: 用户想查看统计数据
+- profile_update: 用户想更新个人档案
+- confirm: 用户在确认或取消
+- general: 通用对话或其他意图
+
+示例：
+- "我吃了鸡腿" → food_report
+- "跑了10公里" → workout_report
+- "我吃了鸡腿，跑了10公里" → food_report,workout_report
+- "我吃了鸡腿，应该如何拉伸？" → food_report,workout
+- "我吃了鸡腿，跑了10公里，如何拉伸？" → food_report,workout_report,workout
+
+输出格式：只返回意图标签，多个用逗号分隔。例如：food,workout
+
+重要：你是一个分类器，不是助手。不要回答问题，只分类意图。
+重要：必须检查用户输入的每一部分，不要遗漏任何意图！""",
 }
 
 
@@ -299,6 +327,18 @@ class ContextManager:
         """
         intent = intent or "general"
         system_context = SYSTEM_PROMPTS.get(intent, SYSTEM_PROMPTS["general"])
+        
+        # 意图分类：不需要上下文、记忆、任务上下文，只用当前输入
+        if intent == "classify_intent":
+            return ContextBundle(
+                system_context=system_context,
+                extra_context="",
+                conversation_window=[],  # 不使用对话历史
+                user_memory={},  # 不使用用户记忆
+                task_context={},  # 不使用任务上下文
+                retrieved_knowledge="",
+            )
+        
         conversation_window = self._get_conversation_window(state)
         user_memory = self._get_user_memory()
         task_context = self._build_task_context(intent, state)
@@ -434,15 +474,26 @@ class ContextManager:
     ) -> None:
         """
         向 state['messages'] 追加一轮对话，并维持滑动窗口上限。
+        
+        注意：此方法直接修改 state["messages"]，每轮只应调用一次。
+        多意图场景下，由主节点（如 general_node）调用，分支节点不应调用。
         """
         messages = state.get("messages", [])
+        if not isinstance(messages, list):
+            messages = []
+        
+        # 追加新消息
         messages = messages + [
             {"role": "user", "content": user_msg},
             {"role": "assistant", "content": assistant_msg},
         ]
+        
+        # 强制窗口限制
         if len(messages) > AgentConfig.MAX_RECENT_MESSAGES:
-            messages = messages[-AgentConfig.MAX_RECENT_MESSAGES :]
+            messages = messages[-AgentConfig.MAX_RECENT_MESSAGES:]
+        
         state["messages"] = messages
+        print(f"[ContextManager] append_messages - 追加后 messages 数量: {len(messages)}")
 
     # ---- 公开工具方法 ----
 
@@ -476,6 +527,33 @@ class ContextManager:
         """从 state['messages'] 提取运行时滑动窗口"""
         messages = state.get("messages", [])
         return messages[-AgentConfig.MAX_RECENT_MESSAGES :]
+    
+    def _get_classify_conversation_window(self, state: AgentState) -> List[Dict]:
+        """为意图分类提取简短的对话窗口
+        
+        意图分类任务不需要完整的对话历史，只使用当前用户输入。
+        如果需要上下文，只使用最近 1 轮的用户消息（不包括 assistant 回复），
+        避免 assistant 的业务回答污染分类结果。
+        """
+        messages = state.get("messages", [])
+        if not messages:
+            return []
+        
+        # 只取最近 2 条用户消息（当前 + 上一轮），不包括 assistant 回复
+        user_messages = [msg for msg in messages if msg.get("role") == "user"]
+        recent_users = user_messages[-2:] if len(user_messages) >= 2 else user_messages
+        
+        # 截断过长的用户消息
+        filtered = []
+        for msg in recent_users:
+            content = msg.get("content", "")
+            # 用户消息截断到 100 字符
+            filtered.append({
+                "role": "user",
+                "content": content[:100] + "..." if len(content) > 100 else content
+            })
+        
+        return filtered
 
     def _get_user_memory(self) -> Dict:
         """加载用户长期记忆：profile + preferences"""
@@ -651,6 +729,240 @@ class ContextManager:
     def _get_preferences_str(self) -> str:
         """将 preferences 字典格式化为上下文字符串（委托给 memory_agent）"""
         return self.memory.get_preferences_for_context()
+
+
+# ============ 分支 Prompt Bundle 构建 ============
+
+
+def build_branch_prompt_bundle(
+    branch_name: str,
+    intent: str,
+    state: AgentState,
+) -> dict:
+    """
+    为指定分支构建 prompt 上下文包。
+
+    目标：
+    - 每个分支只拿到自己需要的上下文
+    - 共享上下文（用户档案、今日统计）统一格式化
+    - 分支上下文（如 recipe 的剩余热量）独立构造
+    - 避免跨分支上下文污染
+
+    Args:
+        branch_name: 分支名（food_branch / workout_branch / stats_branch / recipe_branch）
+        intent: 该分支对应的意图（归一化后）
+        state: LangGraph AgentState
+
+    Returns:
+        BranchPromptBundle 字典
+    """
+    from agent.state import BranchPromptBundle
+    ctx_mgr = get_context_manager()
+
+    # 1. System context
+    system_context = SYSTEM_PROMPTS.get(intent, SYSTEM_PROMPTS.get("general", ""))
+
+    # 2. Shared context（所有分支共享）
+    shared_parts = []
+    profile = {}
+    daily_stats = {}
+    
+    try:
+        profile = ctx_mgr.memory.load_profile() or {}
+    except Exception as e:
+        logger.debug(f"[build_branch_prompt_bundle] load_profile failed: {e}")
+    
+    try:
+        daily_stats = ctx_mgr.memory.load_daily_stats() or {}
+    except Exception as e:
+        logger.debug(f"[build_branch_prompt_bundle] load_daily_stats failed: {e}")
+    
+    if profile:
+        goal = profile.get("goal", "维持")
+        shared_parts.append(f"健身目标：{goal}")
+    if daily_stats:
+        shared_parts.append(
+            f"今日已摄入：{int(daily_stats.get('consumed_calories', 0))} kcal，"
+            f"{daily_stats.get('consumed_protein', 0):.0f}g 蛋白"
+        )
+    shared_context = "\n".join(shared_parts)
+
+    # 3. Branch-specific context
+    branch_context = ""
+    extra_sections = {}
+
+    if intent in ("food", "food_report"):
+        # Food branch: 饮食偏好、今日摄入
+        prefs = ""
+        try:
+            prefs = ctx_mgr.get_preferences_str() or ""
+        except Exception:
+            pass
+        if prefs:
+            branch_context = f"用户偏好：{prefs}"
+        extra_sections["用户偏好"] = prefs or "（暂无偏好记录）"
+        
+        if daily_stats:
+            extra_sections["今日情况"] = (
+                f"今日已摄入：{int(daily_stats.get('consumed_calories', 0))} kcal，"
+                f"{daily_stats.get('consumed_protein', 0):.0f}g 蛋白"
+            )
+
+    elif intent in ("workout", "workout_report", "recovery"):
+        # Workout branch: 运动偏好、今日消耗
+        workout_prefs = {}
+        try:
+            prefs_data = ctx_mgr.memory.load_preferences() or {}
+            workout_prefs = prefs_data.get("workout_preferences", {})
+        except Exception:
+            pass
+        
+        parts = []
+        if workout_prefs.get("limitations"):
+            parts.append(f"运动限制：{', '.join(workout_prefs['limitations'])}")
+        if workout_prefs.get("disliked"):
+            parts.append(f"不喜欢运动：{', '.join(workout_prefs['disliked'])}")
+        if parts:
+            branch_context = "\n".join(parts)
+        
+        if daily_stats and daily_stats.get("burned_calories"):
+            extra_sections["今日消耗"] = f"今日已消耗：{int(daily_stats.get('burned_calories', 0))} kcal"
+        
+        prefs = ""
+        try:
+            prefs = ctx_mgr.get_preferences_str() or ""
+        except Exception:
+            pass
+        extra_sections["用户偏好"] = prefs or "（暂无偏好记录）"
+
+    elif intent == "stats_query":
+        # Stats branch: 今日统计、目标对比
+        if daily_stats and profile:
+            target_cal = int(profile.get("target_calories", 2000))
+            target_pro = int(profile.get("target_protein", 120))
+            consumed_cal = daily_stats.get("consumed_calories", 0)
+            consumed_pro = daily_stats.get("consumed_protein", 0)
+            burned_cal = daily_stats.get("burned_calories", 0)
+            remaining = max(0, target_cal - consumed_cal + burned_cal)
+            branch_context = (
+                f"目标热量：{target_cal} kcal，已摄入：{consumed_cal} kcal，剩余：{remaining} kcal\n"
+                f"目标蛋白：{target_pro}g，已摄入：{consumed_pro:.0f}g\n"
+                f"今日消耗：{burned_cal} kcal"
+            )
+
+    elif intent == "recipe":
+        # Recipe branch: 剩余热量/蛋白、饮食目标
+        if daily_stats and profile:
+            target_cal = int(profile.get("target_calories", 2000))
+            target_pro = int(profile.get("target_protein", 120))
+            consumed_cal = daily_stats.get("consumed_calories", 0)
+            consumed_pro = daily_stats.get("consumed_protein", 0)
+            burned_cal = daily_stats.get("burned_calories", 0)
+            remaining_cal = max(0, target_cal - consumed_cal + burned_cal)
+            remaining_pro = max(0, target_pro - consumed_pro)
+            goal = profile.get("goal", "维持")
+            branch_context = (
+                f"剩余热量：{remaining_cal} kcal\n"
+                f"剩余蛋白质：{remaining_pro} g\n"
+                f"健身目标：{goal}"
+            )
+            extra_sections["用户营养约束"] = (
+                f"剩余热量：{remaining_cal} kcal；"
+                f"剩余蛋白质：{remaining_pro} g；"
+                f"健身目标：{goal}"
+            )
+            prefs = ""
+            try:
+                prefs = ctx_mgr.get_preferences_str() or ""
+            except Exception:
+                pass
+            extra_sections["用户偏好"] = prefs or "（暂无偏好记录）"
+
+    # 4. Conversation window（可以按分支裁剪）
+    conv_window = []
+    try:
+        conv_window = ctx_mgr._get_conversation_window(state)
+    except Exception:
+        pass
+
+    # 5. Branch input（当前分支最相关的用户输入片段）
+    branch_input = _extract_branch_input(intent, state.get("input_message", ""))
+    if not branch_input:
+        branch_input = state.get("input_message", "")
+
+    return BranchPromptBundle(
+        branch_name=branch_name,
+        intent=intent,
+        branch_input=branch_input,
+        system_context=system_context,
+        shared_context=shared_context,
+        branch_context=branch_context,
+        extra_sections=extra_sections,
+        conversation_window=conv_window,
+    )
+
+
+def _split_input_clauses(text: str) -> List[str]:
+    """把用户输入切成若干短语，便于按意图抽取分支输入。"""
+    import re
+
+    if not text:
+        return []
+
+    parts = re.split(r"[。！？!?；;\n]+", text)
+    clauses: List[str] = []
+    for part in parts:
+        for piece in re.split(r"[，,、]", part):
+            clause = piece.strip()
+            if clause:
+                clauses.append(clause)
+    return clauses
+
+
+def _extract_branch_input(intent: str, text: str) -> str:
+    """按 intent 抽取最相关的输入片段，降低分支间上下文污染。"""
+    if not text:
+        return ""
+
+    clauses = _split_input_clauses(text)
+    if not clauses:
+        return text.strip()
+
+    intent_keywords = {
+        "food": ("吃", "喝", "餐", "饭", "菜", "食", "热量", "蛋白", "碳水", "脂肪", "摄入"),
+        "workout": ("跑", "走", "骑", "游", "练", "训", "拉伸", "放松", "恢复", "运动", "健身", "消耗", "锻炼"),
+        "recipe": ("食谱", "推荐", "怎么吃", "搭配", "菜单", "晚餐", "午餐", "早餐", "加餐"),
+        "stats_query": ("统计", "总量", "累计", "今日", "今天", "剩余", "消耗", "摄入"),
+    }
+
+    keywords = intent_keywords.get(intent, ())
+    matched: List[str] = []
+
+    for clause in clauses:
+        if any(keyword in clause for keyword in keywords):
+            matched.append(clause)
+
+    # workout 场景里，"如何拉伸/怎么放松" 往往和运动一起出现，保留这类恢复建议
+    if intent == "workout":
+        for clause in clauses:
+            if ("如何" in clause or "怎么" in clause) and any(
+                token in clause for token in ("拉伸", "放松", "恢复", "练", "运动")
+            ):
+                if clause not in matched:
+                    matched.append(clause)
+
+    if matched:
+        # 保留原始顺序，去重后拼接
+        seen = set()
+        ordered = []
+        for clause in clauses:
+            if clause in matched and clause not in seen:
+                seen.add(clause)
+                ordered.append(clause)
+        return "，".join(ordered)
+
+    # 未命中时，适度缩短整句，避免把无关内容完整塞给分支
+    return clauses[0] if len(clauses) == 1 else "，".join(clauses[:2])
 
 
 # ============ 便捷函数 ============

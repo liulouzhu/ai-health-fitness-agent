@@ -5,6 +5,7 @@
 1. 意图归一化（food_report → food, workout_report → workout）
 2. 特殊意图与业务意图分离
 3. 生成执行计划（执行模式、分支列表）
+4. 为每个分支生成专属的 prompt 上下文包（BranchPromptBundle）
 
 设计原则：
 - 识别层只负责"看懂"，不决定路由
@@ -32,20 +33,22 @@ from agent.stream_utils import emit_trace
 SPECIAL_INTENTS = {"confirm", "profile_update"}
 
 # 业务意图（可并行执行）
-BUSINESS_INTENTS = {"food", "workout", "recipe", "stats_query"}
+BUSINESS_INTENTS = {"food", "food_report", "workout", "workout_report", "recipe", "stats_query", "recovery"}
 
-# 意图别名映射
+# 意图别名映射（仅用于单意图时的降级，不再合并多意图）
 INTENT_ALIASES = {
-    "food_report": "food",
-    "workout_report": "workout",
+    # 注意：多意图场景下不再归一化，保留 food_report / workout_report 作为独立意图
 }
 
 # 意图 → 分支节点名映射
 INTENT_TO_BRANCH = {
     "food": "food_branch",
+    "food_report": "food_branch",
     "workout": "workout_branch",
+    "workout_report": "workout_branch",
     "recipe": "recipe_branch",
     "stats_query": "stats_branch",
+    "recovery": "workout_branch",  # recovery 复用 workout_branch（运动后拉伸/恢复指导）
 }
 
 
@@ -58,7 +61,11 @@ class IntentPlanner:
         pass
     
     def plan(self, state: AgentState) -> AgentState:
-        """规划节点 - 在 classify_intent 之后执行，生成执行计划"""
+        """规划节点 - 在 classify_intent 之后执行，生成执行计划
+        
+        同时为每个分支生成专属的 prompt 上下文包（BranchPromptBundle），
+        确保各分支只拿到自己需要的上下文，避免跨分支污染。
+        """
         print(f"[Planner] plan - 开始意图规划")
         emit_trace("node_start", "intent_planner", "正在规划执行计划...")
         
@@ -76,12 +83,17 @@ class IntentPlanner:
         # 3. 生成执行计划
         intent_plan = self._create_execution_plan(special_intents, regular_intents)
         
-        # 4. 写入 state
+        # 4. 为每个分支生成 prompt bundle
+        branch_bundles = self._generate_branch_bundles(intent_plan, state)
+        
+        # 5. 写入 state
         state["intent_plan"] = intent_plan
+        state["branch_prompt_bundles"] = branch_bundles
         state["route_decision"] = "intent_planner"
         
         print(f"[Planner] plan - 执行计划: mode={intent_plan['execution_mode']}, "
               f"branches={intent_plan['planned_branches']}")
+        print(f"[Planner] plan - 已生成 {len(branch_bundles)} 个分支 prompt bundle")
         emit_trace("node_end", "intent_planner", f"规划完成: {intent_plan['execution_mode']}模式")
         
         return state
@@ -156,6 +168,54 @@ class IntentPlanner:
             planned_branches=planned_branches,
             requires_special_handling=requires_special_handling,
         )
+    
+    def _generate_branch_bundles(self, intent_plan: IntentPlan, state: AgentState) -> dict:
+        """为每个分支生成专属的 prompt 上下文包
+        
+        目标：
+        1. 每个分支只拿到自己需要的上下文
+        2. 共享上下文（用户档案、今日统计）统一格式化
+        3. 分支上下文（如 recipe 的剩余热量）独立构造
+        4. 避免跨分支上下文污染
+        
+        Returns:
+            dict: 分支名 → BranchPromptBundle 映射
+        """
+        from agent.context_manager import build_branch_prompt_bundle
+        
+        bundles = {}
+        planned_branches = intent_plan.get("planned_branches", [])
+        regular_intents = intent_plan.get("regular_intents", [])
+        
+        # 构建分支名 → 意图的映射
+        branch_to_intent = {}
+        for intent in regular_intents:
+            branch = INTENT_TO_BRANCH.get(intent)
+            if branch and branch not in branch_to_intent:
+                branch_to_intent[branch] = intent
+        
+        # 为每个分支生成 bundle
+        for branch_name in planned_branches:
+            intent = branch_to_intent.get(branch_name, "general")
+            try:
+                bundle = build_branch_prompt_bundle(branch_name, intent, state)
+                bundles[branch_name] = bundle
+                print(f"[Planner] _generate_branch_bundles - 生成 {branch_name} bundle (intent={intent})")
+            except Exception as e:
+                print(f"[Planner] _generate_branch_bundles - 生成 {branch_name} bundle 失败: {e}")
+                # 使用最小化 bundle 作为 fallback
+                bundles[branch_name] = {
+                    "branch_name": branch_name,
+                    "intent": intent,
+                    "branch_input": state.get("input_message", ""),
+                    "system_context": "",
+                    "shared_context": "",
+                    "branch_context": "",
+                    "extra_sections": {},
+                    "conversation_window": [],
+                }
+        
+        return bundles
 
 
 # ============ 模块级实例 ============

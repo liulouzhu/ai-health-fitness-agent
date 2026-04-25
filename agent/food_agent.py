@@ -75,7 +75,13 @@ class FoodAgent:
             "carbs": 0
         }
 
-    def run(self, state: AgentState) -> AgentState:
+    def run(
+        self,
+        state: AgentState,
+        extra_sections: dict = None,
+        branch_input: str = None,
+        append_history: bool = True,
+    ) -> AgentState:
         """执行食物分析（graph-native 版本）
 
         流程：
@@ -86,14 +92,29 @@ class FoodAgent:
         5. 写入 food_result + final_response
 
         实际 commit 由 graph 的 commit_node 负责。
+
+        Args:
+            state: LangGraph AgentState
+            extra_sections: 可选，由 planner 预生成的分支上下文。如果提供，优先使用。
+            branch_input: 可选，由 planner 预生成的分支专属输入片段。如果提供，优先使用。
         """
-        is_user_reporting = state.get("intent") == "food_report"
-        print(f"[FoodAgent] run - is_user_reporting={is_user_reporting}, intent={state.get('intent')}")
+        is_user_reporting = (
+            "food_report" in (state.get("source_intents") or [])
+            or state.get("intent") == "food_report"
+        )
+        print(f"[FoodAgent] run - is_user_reporting={is_user_reporting}, intent={state.get('intent')}, source_intents={state.get('source_intents')}")
+
+        # 优先使用分支专属输入，否则使用原始输入
+        if branch_input:
+            query = branch_input
+            print(f"[FoodAgent] run - 使用分支专属输入: {query[:50]}...")
+        else:
+            query = state["input_message"]
+            print(f"[FoodAgent] run - 使用原始输入: {query[:50]}...")
 
         try:
             image_info = state.get("image_info", {})
             ctx_mgr = get_context_manager()
-            query = state["input_message"]
 
             # === Step 1: 检索 ===
             retrieved_results = self.retrieve_from_qdrant(query)
@@ -105,10 +126,16 @@ class FoodAgent:
                     retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"
 
             # === Step 2: 获取偏好和上下文 ===
-            preferences = ctx_mgr.get_preferences_str()
-            if not preferences:
-                preferences = "（暂无偏好记录）"
-            task_text = ctx_mgr.format_task_context("food")
+            # 如果有预生成的 extra_sections，优先使用；否则自己构建
+            if extra_sections is not None:
+                print(f"[FoodAgent] run - 使用预生成的 extra_sections")
+                preferences = extra_sections.get("用户偏好", "（暂无偏好记录）")
+                task_text = extra_sections.get("今日情况", "")
+            else:
+                preferences = ctx_mgr.get_preferences_str()
+                if not preferences:
+                    preferences = "（暂无偏好记录）"
+                task_text = ctx_mgr.format_task_context("food")
 
             # === Step 3: LLM 分析 ===
             if image_info.get("has_image", False):
@@ -219,8 +246,9 @@ class FoodAgent:
             state["requires_confirmation"] = False
 
         # 更新对话历史
-        ctx_mgr = get_context_manager()
-        ctx_mgr.append_messages(state, state["input_message"], state.get("response", ""))
+        if append_history:
+            ctx_mgr = get_context_manager()
+            ctx_mgr.append_messages(state, state["input_message"], state.get("response", ""))
         return state
 
 

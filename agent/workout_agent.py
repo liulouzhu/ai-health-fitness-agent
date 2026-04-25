@@ -69,7 +69,13 @@ class WorkoutAgent:
             print(f"[WorkoutAgent] 解析运动数据失败: {e}")
         return {"type": "未知运动", "duration": 0, "calories": 0}
 
-    def run(self, state: AgentState) -> AgentState:
+    def run(
+        self,
+        state: AgentState,
+        extra_sections: dict = None,
+        branch_input: str = None,
+        append_history: bool = True,
+    ) -> AgentState:
         """执行健身指导（graph-native 版本）
 
         流程：
@@ -81,39 +87,101 @@ class WorkoutAgent:
         6. 写入 workout_result + final_response
 
         实际 commit 由 graph 的 commit_node 负责。
+
+        Args:
+            state: LangGraph AgentState
+            extra_sections: 可选，由 planner 预生成的分支上下文。如果提供，优先使用。
+            branch_input: 可选，由 planner 预生成的分支专属输入片段。如果提供，优先使用。
         """
-        is_user_reporting = state.get("intent") == "workout_report"
-        print(f"[WorkoutAgent] run - is_user_reporting={is_user_reporting}, intent={state.get('intent')}")
+        source_intents = state.get("source_intents") or []
+        is_user_reporting = (
+            "workout_report" in source_intents
+            or state.get("intent") == "workout_report"
+        )
+        has_advice_intent = "workout" in source_intents
+        is_multi_intent = is_user_reporting and has_advice_intent
+        print(f"[WorkoutAgent] run - is_user_reporting={is_user_reporting}, has_advice_intent={has_advice_intent}, is_multi_intent={is_multi_intent}, intent={state.get('intent')}, source_intents={source_intents}")
+
+        # 优先使用原始输入（多意图场景需要完整输入），否则用分支专属输入
+        if is_multi_intent:
+            query = state["input_message"]
+            print(f"[WorkoutAgent] run - 多意图，使用原始输入: {query[:50]}...")
+        elif branch_input:
+            query = branch_input
+            print(f"[WorkoutAgent] run - 使用分支专属输入: {query[:50]}...")
+        else:
+            query = state["input_message"]
+            print(f"[WorkoutAgent] run - 使用原始输入: {query[:50]}...")
 
         try:
-            query = state["input_message"]
             ctx_mgr = get_context_manager()
 
             # === Step 1: 检索 ===
-            retrieved_results = self.retrieve_from_qdrant(query)
+            # 多意图时对问题部分也做检索
+            retrieval_query = query
+            if is_multi_intent:
+                # 提取问题部分用于检索（如"背部应该怎么练"）
+                import re
+                clauses = re.split(r"[；;。！？!?\n]+", state["input_message"])
+                question_parts = [c.strip() for c in clauses if "怎么" in c or "如何" in c or "？" in c or "?" in c]
+                if question_parts:
+                    retrieval_query = " ".join(question_parts)
+                    print(f"[WorkoutAgent] run - 多意图检索 query: {retrieval_query[:50]}...")
+
+            retrieved_results = self.retrieve_from_qdrant(retrieval_query)
             retrieved_content = "\n".join([r.text for r in retrieved_results]) if retrieved_results else ""
 
-            if not check_retrieval(retrieved_content, query=query, domain="workout"):
-                tavily_content = search_with_tavily(query)
+            if not check_retrieval(retrieved_content, query=retrieval_query, domain="workout"):
+                tavily_content = search_with_tavily(retrieval_query)
                 if tavily_content:
                     retrieved_content = f"{retrieved_content}\n\n--- 网络搜索结果 ---\n{tavily_content}"
 
             # === Step 2: LLM 生成 ===
-            preferences = ctx_mgr.get_preferences_str()
-            if not preferences:
-                preferences = "（暂无偏好记录）"
-            task_text = ctx_mgr.format_task_context("workout")
+            # 如果有预生成的 extra_sections，优先使用；否则自己构建
+            if extra_sections is not None:
+                print(f"[WorkoutAgent] run - 使用预生成的 extra_sections")
+                # 合并预生成的 sections 和检索内容
+                extra_sections = dict(extra_sections)
+                extra_sections["参考内容"] = retrieved_content or "无相关内容"
+            else:
+                preferences = ctx_mgr.get_preferences_str()
+                if not preferences:
+                    preferences = "（暂无偏好记录）"
+                task_text = ctx_mgr.format_task_context("workout")
 
-            extra_sections = {
-                "用户偏好": preferences,
-                "用户情况": task_text,
-                "参考内容": retrieved_content or "无相关内容",
-            }
+                extra_sections = {
+                    "用户偏好": preferences,
+                    "用户情况": task_text,
+                    "参考内容": retrieved_content or "无相关内容",
+                }
+
+            # 多意图时注入明确指令，让 LLM 同时处理记录和回答
+            if is_multi_intent:
+                extra_sections["⚠️ 必须完成的两个任务（缺一不可）"] = (
+                    "用户输入包含两个意图，你必须同时处理：\n\n"
+                    "【任务1 - 运动记录】确认用户的运动数据（类型、时长、预估消耗）\n\n"
+                    "【任务2 - 运动咨询】回答用户提出的健身问题，给出具体动作、组数、次数等专业建议\n\n"
+                    "⚠️ 你的回复必须包含以上两个任务的内容，只完成其中一个是不合格的！"
+                )
+
             messages = ctx_mgr.build_prompt_messages(
                 "workout",
                 state,
                 extra_sections=extra_sections,
             )
+
+            # 多意图时：在系统消息后插入强制指令，确保 LLM 不会忽略
+            if is_multi_intent:
+                messages.insert(1, {
+                    "role": "system",
+                    "content": (
+                        "⚠️ 重要：用户的输入包含两个意图——运动记录 + 运动咨询。"
+                        "你必须在回复中同时处理这两个意图！\n"
+                        "1. 先总结用户的运动记录\n"
+                        "2. 再详细回答用户的健身问题（给出具体动作、组数、次数建议）\n"
+                        "只处理其中一个意图是不合格的回复！"
+                    )
+                })
             response = self.llm.invoke(messages)
             state["workout_result"] = response.content
 
@@ -159,6 +227,7 @@ class WorkoutAgent:
             state["requires_confirmation"] = False
 
         # 更新对话历史
-        ctx_mgr = get_context_manager()
-        ctx_mgr.append_messages(state, state["input_message"], state.get("response", ""))
+        if append_history:
+            ctx_mgr = get_context_manager()
+            ctx_mgr.append_messages(state, state["input_message"], state.get("response", ""))
         return state

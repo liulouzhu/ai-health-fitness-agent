@@ -61,6 +61,23 @@ class IntentPlan(TypedDict):
     requires_special_handling: bool  # 是否需要特殊处理
 
 
+# ============ 分支 Prompt Bundle ============
+class BranchPromptBundle(TypedDict, total=False):
+    """分支专属的 prompt 上下文包
+    
+    在 planner 层生成，传递给各分支消费。
+    目标：每个分支只拿到自己需要的上下文，避免跨分支污染。
+    """
+    branch_name: str                 # 分支名（food_branch / workout_branch / stats_branch / recipe_branch）
+    intent: str                      # 该分支对应的意图（归一化后）
+    branch_input: str                # 该分支最相关的用户输入片段（可能只是原始输入的子集）
+    system_context: str              # 该分支的 system prompt
+    shared_context: str              # 所有分支共享的上下文（用户档案、今日统计、通用约束）
+    branch_context: str              # 该分支独有的上下文（如 recipe 分支的剩余热量）
+    extra_sections: Dict[str, str]   # 该分支的 extra_sections（用于 build_prompt_messages）
+    conversation_window: List[Dict]  # 该分支可用的对话历史窗口（可能被裁剪过）
+
+
 # ============ LangGraph 主状态 ============
 #
 # 字段分组：
@@ -84,20 +101,22 @@ class AgentState(TypedDict):
 
     # --- 路由决策（由 classify_intent 节点填充） ---
     intent: str                  # food / workout / recipe / stats_query / profile_update / confirm / general
-    intents: List[str]           # 多意图列表，如 ["food", "workout"]
+    intents: List[str]           # 多意图列表，如 ["food_report", "workout_report"]（保留原始形式）
+    source_intents: Optional[List[str]]  # 分支原始意图列表（fan-out 传递，保留 report 语义）
     last_intent: Optional[str]   # 上一个意图，用于上下文推断
     route_decision: Optional[str]  # 路由到的目标节点名（调试/可观测性）
 
     # --- 意图规划（三层解耦核心，由 planner 节点填充）---
     intent_plan: Optional[IntentPlan]  # 意图规划结果，包含执行模式和分支列表
+    branch_prompt_bundles: Optional[Dict[str, "BranchPromptBundle"]]  # 分支专属 prompt 上下文包（分支名 → bundle）
 
     # --- 记忆镜像（memory 模块是主数据源，此处仅为本轮运行时方便缓存）---
     user_profile: Optional[UserProfile]     # 用户档案镜像（主数据源在 memory_agent）
     daily_stats: Optional[DailyStats]       # 今日统计镜像（主数据源在 memory_agent）
     profile_complete: bool                  # 用户档案是否完整（路由缓存，非持久真相）
 
-    # --- 对话历史（Annotated list，用 operator.add 累加）---
-    messages: Annotated[list, operator.add]
+    # --- 对话历史（直接赋值，不使用 reducer 避免累加）---
+    messages: List[Dict]           # 对话历史，由 append_messages() 维护窗口
 
     # --- 摘要缓冲（用于长期记忆写入） ---
     summary_buffer: List[Dict]        # 未摘要的对话轮次 [{"user": ..., "agent": ..., "timestamp": ...}]
